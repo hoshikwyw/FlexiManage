@@ -11,7 +11,7 @@
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(83);
+select plan(84);
 
 -- ---------------------------------------------------------------------------
 -- Row level security
@@ -161,8 +161,8 @@ order by p.proname;
 
 select is(
   (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace),
-  10,
-  'migration 001 defines exactly ten functions in public'
+  11,
+  'migrations 001 and 002 define exactly eleven functions in public'
 );
 
 select * from finish();

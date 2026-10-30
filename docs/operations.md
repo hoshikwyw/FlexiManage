@@ -1,7 +1,7 @@
 # Operations
 
 Runtime and tooling notes for operators. Updated by the `devops-engineer` agent.
-Last updated: 2026-10-30 (Part 3: database tests and CI `db-tests` job).
+Last updated: 2026-10-30 (Part 4: Edge Functions served locally).
 
 ## Environments
 
@@ -48,6 +48,7 @@ the CLI is installed globally).
 | `npm run db:types`                  | `supabase gen types typescript --local > src/types/supabase.ts`. Run after every migration change.          |
 | `npm run test:db`                   | `supabase test db`: run every `supabase/tests/*.sql` file with pgTAP (pg_prove in a container) against the local database. |
 | `npx supabase migration new <name>` | Create an empty timestamped migration file.                                                                 |
+| `npm run functions:serve`           | `supabase functions serve`: serve every folder in `supabase/functions` at `http://127.0.0.1:54321/functions/v1/<name>` with hot reload. See Edge Functions below. |
 | `npm run db:stop`                   | `supabase stop`: stop the containers (data is kept in a Docker volume; `--no-backup` discards it).          |
 
 ### Database tests
@@ -57,7 +58,7 @@ migrations and seed (`npm run db:reset` after any schema or seed change). The CL
 `pgtap` extension in the `extensions` schema if it is missing and runs `pg_prove` over
 `supabase/tests` in file-name order. Conventions:
 
-- Files are numbered (`01_rls_enabled.sql` ... `10_anon.sql`) and each wraps everything in
+- Files are numbered (`01_rls_enabled.sql` ... `11_accept_invitation_fn.sql`) and each wraps everything in
   `begin; select plan(N); ... select * from finish(); rollback;`, so a run leaves no data behind.
 - Users are impersonated the way PostgREST does: `set local role authenticated` plus
   `set_config('request.jwt.claims', '{"sub": "<uuid>", "role": "authenticated"}', true)`. Each file
@@ -67,6 +68,48 @@ migrations and seed (`npm run db:reset` after any schema or seed change). The CL
 - Fixed ids come from `supabase/seed.sql` / `tests/fixtures/ids.ts` (alice owns A, bob owns B).
 - A failing test that exposes a schema bug is fixed with a new migration, never by editing an
   applied one or by weakening the assertion.
+
+### Edge Functions
+
+`npm run functions:serve` needs the stack running. It starts the Docker edge runtime (Deno 2; no
+Deno install on the host is needed) and serves `invite-member` and `accept-invitation`, reloading
+on every file change. Stop it with Ctrl+C; the stack keeps running.
+
+- Environment: the CLI injects `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
+  `SUPABASE_SERVICE_ROLE_KEY` (plus the newer `SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_SECRET_KEY`)
+  for the local stack; the hosted platform does the same in production. They are never written
+  to a file. Function-specific variables live in `supabase/functions/.env` (git-ignored); copy
+  `supabase/functions/.env.example`, which currently holds only `ALLOWED_ORIGIN`. In production
+  set it with `supabase secrets set ALLOWED_ORIGIN=https://app.example.com`.
+- Imports: one shared `supabase/functions/deno.json` (import map) for all functions;
+  `config.toml` points each `[functions.<name>]` at it. Add dependencies there, never per
+  function. `import_map.json` is deprecated in CLI 2.x.
+- JWT: `verify_jwt = true` in `config.toml`, so the runtime answers a missing, malformed or expired
+  token with its own 401 body before the function runs. Locally, Kong substitutes the anon key
+  for a missing `Authorization` header, so that case reaches the function and gets the project's
+  `{ error: { code: "unauthorized" } }` body instead. Clients treat any 401 as "sign in again".
+- CORS: locally Kong's `cors` plugin answers `OPTIONS` for `/functions/v1/*` with `*` before the
+  request reaches the runtime, so the functions' own preflight handler is only visible when the
+  runtime is called directly (`http://supabase_edge_runtime_fleximanage:8081/<name>` from inside
+  the Docker network). In production the function's headers apply; set `ALLOWED_ORIGIN`.
+- Tooling: `supabase/functions/**` is excluded from ESLint and from the Vite `tsconfig` (Deno
+  code with `npm:` specifiers); Prettier still formats it. Deploy with
+  `supabase functions deploy <name>` once a hosted project exists (Phase 5).
+
+Calling a function from a shell: obtain a JWT for a seed user with the password grant, then post
+to the function. Set `ANON` from `npx supabase status -o env` (`ANON_KEY`).
+
+```sh
+curl -s -X POST "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $ANON" -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"password123"}'     # -> access_token
+curl -s -X POST http://127.0.0.1:54321/functions/v1/invite-member \
+  -H "apikey: $ANON" -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"workspaceId":"00000000-0000-0000-0000-0000000000aa","email":"bob@example.com","role":"member"}'
+```
+
+The invitation token is never returned by the API; for local testing read it from the database
+(`select token from public.invitations where email = 'bob@example.com'`).
 
 Local ports: API `54321`, Postgres `54322`, Studio `54323`, mail `54324`. Connection string for
 psql or `supabase db query`: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`.

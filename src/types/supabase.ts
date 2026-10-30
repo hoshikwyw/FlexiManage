@@ -117,7 +117,12 @@ isOneToOne: false
             [_ in never]: never
           }
           Functions: {
-            "current_user_workspace_ids":
+            "accept_invitation":
+{ Args: { "p_token": string }; Returns: {
+              "role": Database["public"]['Enums']["workspace_role"],"workspace_id": string,"workspace_name": string,"workspace_slug": string
+            }[]
+                           },
+"current_user_workspace_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
 "has_workspace_role":

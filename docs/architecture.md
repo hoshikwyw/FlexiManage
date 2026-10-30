@@ -2,7 +2,7 @@
 
 Database and backend reference. Maintained by the `supabase-engineer` agent; every new table,
 function or policy is documented here in the same change that introduces it.
-Last updated: 2026-10-30 (migration 001).
+Last updated: 2026-10-30 (migration 002 and the Part 4 Edge Functions).
 
 ## Tenancy model
 
@@ -13,11 +13,13 @@ Last updated: 2026-10-30 (migration 001).
   `owner`, `admin` or `member` (enum `public.workspace_role`).
 - Authorization is enforced by Row Level Security in Postgres. The browser uses the anon key and a
   user JWT; policies decide what each query may see or change. UI hiding is never the enforcement.
-- Privileged actions that need cross-row checks or secrets (accepting invitations, plan limits,
-  exports) go through Edge Functions (Part 4 and later) using the service-role key, which never
-  reaches the browser.
-- Every privileged write produces a `public.audit_events` row. In migration 001 these are written
-  by triggers; Edge Functions will add their own.
+- Privileged actions that need cross-row checks or secrets (inviting, accepting invitations, plan
+  limits, exports) go through Edge Functions (see [Edge Functions](#edge-functions-supabasefunctions))
+  which verify the JWT, load the caller's role and only then act. The service-role key is used
+  inside functions for lookups RLS would block; it never reaches the browser.
+- Every privileged write produces a `public.audit_events` row. Membership and invitation changes
+  are written by triggers (migration 001); `accept_invitation()` writes `invitation.accepted`
+  (migration 002); future functions use `writeAudit` from the shared toolkit.
 
 Role capabilities in migration 001:
 
@@ -102,7 +104,14 @@ Column grant: `authenticated` may update only `role`.
 ### `invitations`
 
 Pending invitations by email. Acceptance (matching the token, creating the membership, stamping
-`accepted_at`) is an Edge Function in Part 4; clients cannot update this table.
+`accepted_at`) is the Postgres function `accept_invitation(p_token)` from migration 002, called by
+the `accept-invitation` Edge Function; clients cannot update this table.
+
+Lifecycle: `created` (insert by owner/admin, directly or via `invite-member`) -> `accepted`
+(`accepted_at` set by `accept_invitation()`, token consumed) | `revoked` (row deleted by
+owner/admin under RLS) | `expired` (`expires_at <= now()`, row kept; accepting fails with 410). A
+pending, unexpired invitation for the same email is reused by `invite-member` instead of creating
+a duplicate; to change the role, revoke and invite again.
 
 | Column         | Type             | Notes                                                        |
 | -------------- | ---------------- | ------------------------------------------------------------ |
@@ -139,7 +148,10 @@ Append-only log of privileged actions. Clients can read their workspaces' events
 Index: `audit_events_workspace_created_idx (workspace_id, created_at desc)`.
 
 Actions written in migration 001: `workspace.created`, `member.added`, `member.role_changed`,
-`member.removed`, `invitation.created`, `invitation.revoked`.
+`member.removed`, `invitation.created`, `invitation.revoked`. Migration 002 adds
+`invitation.accepted` (metadata `{ email, role, already_member }`, never the token). Accepting an
+invitation therefore produces two rows: `member.added` from the membership trigger and
+`invitation.accepted` from the function, both with the invitee as `actor_id`.
 
 ## Functions
 
@@ -153,6 +165,25 @@ as a parameter; it always comes from `auth.uid()`.
 | `has_workspace_role(p_workspace_id uuid, p_roles workspace_role[])` | boolean | Caller holds one of the given roles in the workspace.   |
 | `current_user_workspace_ids()`                       | setof uuid   | All workspace ids the caller belongs to.                         |
 | `shares_workspace_with(p_user_id uuid)`              | boolean      | Caller and `p_user_id` share at least one workspace (profiles).  |
+
+### `accept_invitation(p_token text)` (migration `20261030150000_002_accept_invitation.sql`)
+
+`security definer`, `set search_path = ''`, `volatile`. Executable by `authenticated` only; revoked
+from `public`, `anon` and `service_role`, so nobody can accept on another user's behalf: the
+caller is always `auth.uid()`. Returns one row `(workspace_id, workspace_name, workspace_slug,
+role)`. In a single transaction it:
+
+1. Rejects when `auth.uid()` is null or has no `auth.users` row (`PT401`).
+2. Locks the invitation row by token (`for update`). Unknown token or `accepted_at` already set:
+   `PT404` (tokens are one-shot; a second call is a clean error, not an idempotent success).
+3. `expires_at <= now()`: `PT410`.
+4. Compares `lower(invitations.email)` with the caller's `auth.users.email` (not the JWT claim,
+   which can be stale after an email change) and requires `email_confirmed_at`: otherwise `PT403`.
+5. Inserts the membership with the invited role unless the caller is already a member (then the
+   existing role is kept), stamps `accepted_at = now()` and writes `invitation.accepted`.
+
+The `PTxxx` SQLSTATEs make PostgREST return that HTTP status when the function is called through
+the REST API directly; the Edge Function maps them to stable error codes (table below).
 
 Trigger functions (not executable by any API role):
 
@@ -175,7 +206,7 @@ and no table grant, so it is denied for `authenticated`. `o/a` means owner or ad
 | `profiles`          | own row, or `shares_workspace_with(id)`         | none (trigger)                                                 | own row; check `id = auth.uid()`; cols `full_name`, `avatar_url` | none                                                      |
 | `workspaces`        | `is_workspace_member(id)`                       | check `created_by = auth.uid()`                                | o/a; cols `name`, `slug`                            | owner                                                                  |
 | `workspace_members` | `is_workspace_member(workspace_id)`             | o/a; new `role = 'owner'` only if actor is owner               | owner; col `role`; last-owner trigger               | self, or owner, or admin when target `role <> 'owner'`; last-owner trigger |
-| `invitations`       | o/a                                             | o/a; `invited_by = auth.uid()`; `role = 'owner'` only if owner | none (Edge Function in Part 4)                      | o/a                                                                    |
+| `invitations`       | o/a                                             | o/a; `invited_by = auth.uid()`; `role = 'owner'` only if owner | none (`accept_invitation()` only)                   | o/a                                                                    |
 | `audit_events`      | `is_workspace_member(workspace_id)`             | none                                                           | none                                                | none                                                                   |
 
 Policy names:
@@ -214,15 +245,80 @@ Alice is not a member of B and Bob is not a member of A. The seed inserts `auth.
 `auth.identities` directly (local only), and inserts the workspaces with `created_by` set so the
 `on_workspace_created` trigger produces the memberships and audit rows.
 
+## Edge Functions (`supabase/functions`)
+
+Deno functions served by the Supabase edge runtime at `/functions/v1/<name>`. One shared Deno
+config, `supabase/functions/deno.json`, holds the import map (`@supabase/supabase-js` 2, `zod` 4)
+for every function; the CLI resolves the nearest `deno.json` of each entrypoint and
+`config.toml` names it explicitly (`import_map`). `[functions.<name>]` in `config.toml` has
+`verify_jwt = true`, so the runtime rejects requests with a missing or invalid JWT before the
+function runs; every function still verifies the user itself with `auth.getUser()`.
+
+Order of operations in every function (agent rule): CORS preflight -> verify JWT -> validate the
+body with Zod -> load the caller's role in the target workspace -> check business rules -> act ->
+audit. Functions never return the service-role key or an invitation token.
+
+### Shared toolkit (`_shared/`)
+
+| Module          | Exports                                                     | Purpose                                                                                     |
+| --------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `cors.ts`       | `corsHeaders(req)`, `handlePreflight(req)`                  | Allow-list from env `ALLOWED_ORIGIN` (comma-separated, default `http://localhost:5173`).    |
+| `errors.ts`     | `AppError`, `ErrorCode`, `jsonOk`, `jsonError`, `toAppError` | Envelope `{ data }` or `{ error: { code, message, details? } }`; unknown errors -> `internal`. |
+| `handler.ts`    | `createHandler(methods, fn)`                                | Wraps a function with preflight, method check and error mapping.                            |
+| `auth.ts`       | `requireUser(req)`, `adminClient()`, `requireWorkspaceRole()` | User-scoped client (anon key + caller JWT), service-role client, membership/role check.      |
+| `validation.ts` | `parseBody(req, schema)`                                    | JSON body through a Zod schema; failures -> 400 `validation_error` with flattened issues.    |
+| `audit.ts`      | `writeAudit(admin, event)`                                  | Inserts an `audit_events` row for writes no trigger covers (not used by the two functions).  |
+| `types.ts`      | `WorkspaceRole`, `WORKSPACE_ROLES`                          | Mirror of the `workspace_role` enum.                                                        |
+
+### Error codes
+
+| HTTP | `error.code`         | Raised when                                                                                    |
+| ---: | -------------------- | ---------------------------------------------------------------------------------------------- |
+|  400 | `validation_error`   | Body is not JSON or fails the Zod schema; `details` holds `{ formErrors, fieldErrors }`.         |
+|  401 | `unauthorized`       | No bearer token, or `auth.getUser()` rejects it. With `verify_jwt = true` the runtime answers a malformed or expired JWT first, with its own body (`{ code: "UNAUTHORIZED_..." }`); clients switch on the status. |
+|  403 | `forbidden`          | Caller is not a member, has an insufficient role, an admin invites as owner, or an invitation belongs to a different (or unverified) email. Non-membership and wrong role share one code so workspace existence is not revealed. |
+|  404 | `not_found`          | Invitation token unknown or already used.                                                      |
+|  405 | `method_not_allowed` | Anything but `POST` (and `OPTIONS`).                                                           |
+|  409 | `conflict`           | The invited email already belongs to a member of the workspace.                                |
+|  410 | `invitation_expired` | `expires_at` has passed.                                                                       |
+|  500 | `internal`           | Unexpected failure; message is generic, details only in the function log.                      |
+
+### `invite-member` (POST)
+
+Request `{ workspaceId: uuid, email: string, role: 'owner' | 'admin' | 'member' }`; `email` is
+trimmed and lowercased, 3..320 chars and must be an email address. Response
+`200 { data: { id, email, role, expiresAt } }`. Rules: caller must be owner or admin (`403`);
+only an owner may invite as owner (`403`); email already a member -> `409`; a pending, unexpired
+invitation for the same email is returned unchanged (`200`, idempotent, same `id`).
+
+The lookups (caller role, current members' emails, pending invitations) use the service-role
+client. The insert deliberately uses the caller's own client: RLS re-checks owner/admin,
+`invited_by = auth.uid()` and the owner-only rule as a second line of defence, and the
+`invitations_audit` trigger records the caller as `actor_id` of `invitation.created` (with the
+service-role client `auth.uid()` would be null and the actor lost). Nothing is double-logged.
+
+### `accept-invitation` (POST)
+
+Request `{ token: string }`. Response
+`200 { data: { workspaceId, workspaceName, workspaceSlug, role } }`. Thin wrapper: verifies the
+user, validates the body and calls `accept_invitation(p_token)` through the caller's client, so
+`auth.uid()` inside Postgres is the caller and the service-role key is not involved. SQLSTATE
+mapping: `PT401` -> 401 `unauthorized`, `PT403`/`42501` -> 403 `forbidden`, `PT404` -> 404
+`not_found`, `PT410` -> 410 `invitation_expired`.
+
+Revoking an invitation needs no function: it is a direct delete under RLS (owner/admin) and the
+trigger writes `invitation.revoked`.
+
 ## Still to come
 
 - Part 3 (done 2026-10-30): pgTAP tests in `supabase/tests` (`01_rls_enabled` through `10_anon`)
   prove the matrix above, the role table, the last-owner guard, the audit triggers and the
   cross-workspace denials in `docs/PLANNING.md` section 7 for all five tables. Run with
   `npm run test:db`; CI job `db-tests`.
-- Part 4: Edge Functions `create-workspace` (may replace the `on_workspace_created` trigger when
-  plan limits land), `invite-member`, `accept-invitation` (the only path that updates
-  `invitations.accepted_at`).
-- Phase 3: migration 002 (`modules`, `field_definitions`, `records`, `attachments`) and the
-  `attachments` storage bucket.
-- Phase 4: migration 003 (billing tables) and `check_entitlement`.
+- Part 4 (done 2026-10-30): migration 002 (`accept_invitation`, tested in
+  `11_accept_invitation_fn.sql`), Edge Functions `invite-member` and `accept-invitation` with the
+  shared toolkit. `create-workspace` is deferred to Phase 4: the `on_workspace_created` trigger
+  stays the creation path until plan limits must be checked before the insert.
+- Phase 3: migration 003 (`modules`, `field_definitions`, `records`, `attachments`) and the
+  `attachments` storage bucket; Edge Function `export-records`.
+- Phase 4: billing tables, `check_entitlement` and `create-workspace`.

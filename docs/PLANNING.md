@@ -73,8 +73,8 @@ Agents: devops-engineer, supabase-engineer, frontend-dev, test-engineer.
 - [ ] GitHub Actions CI: typecheck, lint, unit tests, build (devops-engineer).
 - [ ] Supabase project (local + staging), CLI config, type generation script (devops-engineer).
 - [ ] Migration 001: `profiles`, `workspaces`, `workspace_members`, `invitations`, `audit_events` with RLS and membership helpers (supabase-engineer).
-- [ ] Edge Function `create-workspace` that creates workspace, owner membership and audit event in one transaction (supabase-engineer).
-- [ ] Edge Function `invite-member` with role check and audit event (supabase-engineer).
+- [-] Edge Function `create-workspace` that creates workspace, owner membership and audit event in one transaction (supabase-engineer). Deferred to Phase 4: the `on_workspace_created` trigger from migration 001 already does this atomically; the function is only needed once plan limits must be checked before the insert.
+- [x] Edge Function `invite-member` with role check and audit event (supabase-engineer). Done 2026-10-30 together with `accept-invitation`, the shared toolkit in `supabase/functions/_shared` and migration 002 (`accept_invitation()` SQL function, tested in `supabase/tests/11_accept_invitation_fn.sql`).
 - [ ] Auth screens: sign up, log in, password reset, email verification handling (frontend-dev).
 - [ ] Workspace create and switch; members list; invite flow (frontend-dev).
 - [ ] App shell: sidebar layout, protected routes, workspace context (frontend-dev).
@@ -237,6 +237,9 @@ row, including the caller's own workspace. `profiles` has no `workspace_id` and 
 separately in `06_isolation_profiles.sql` (own row plus shared-workspace visibility only).
 
 Plus: Edge Functions `invite-member` and `export-records` return 403 when the caller is not a member of the target workspace, and 403 when the caller is a `member` for admin-only actions.
+
+- [x] `invite-member`: verified by HTTP on 2026-10-30 against the local stack (non-member 403, `member` 403, admin inviting as owner 403, owner 200; see `docs/architecture.md`, Edge Functions).
+- [ ] `export-records`: Phase 3.
 
 ---
 
