@@ -73,6 +73,23 @@ Add shadcn/ui components with `npx shadcn@latest add <component>`; they land in 
 | `npm run db:reset`     | Reset the local Supabase database and re-apply migrations and seed.             |
 | `npm run db:types`     | Generate TypeScript types from the local database into `src/types/supabase.ts`. |
 
+## Local database
+
+The database runs locally in Docker through the Supabase CLI (`supabase/config.toml`).
+
+```sh
+npx supabase start      # first run pulls images; prints API URL, anon key, Studio URL
+npm run db:reset        # apply supabase/migrations and supabase/seed.sql from scratch
+npm run db:types        # regenerate src/types/supabase.ts from the local schema
+npx supabase stop       # stop the containers
+```
+
+Point `.env.local` at the local stack with `VITE_SUPABASE_URL=http://127.0.0.1:54321` and the
+anon key printed by `npx supabase status`. Seed users: `alice@example.com` (owns `workspace-a`)
+and `bob@example.com` (owns `workspace-b`), password `password123`; fixed ids live in
+`tests/fixtures/ids.ts`. Schema, helper functions and the RLS policy matrix are documented in
+`docs/architecture.md`; operator notes in `docs/operations.md`.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request: install, typecheck, lint, format
