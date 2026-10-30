@@ -2,7 +2,8 @@
 
 Database and backend reference. Maintained by the `supabase-engineer` agent; every new table,
 function or policy is documented here in the same change that introduces it.
-Last updated: 2026-10-30 (migration 002 and the Part 4 Edge Functions).
+Last updated: 2026-10-30 (migration 002, the Part 4 Edge Functions and the Part 5 frontend
+section).
 
 ## Tenancy model
 
@@ -308,6 +309,109 @@ mapping: `PT401` -> 401 `unauthorized`, `PT403`/`42501` -> 403 `forbidden`, `PT4
 
 Revoking an invitation needs no function: it is a direct delete under RLS (owner/admin) and the
 trigger writes `invitation.revoked`.
+
+## Frontend (`src/`)
+
+React SPA (Vite, TypeScript strict, React Router 7, TanStack Query 5, React Hook Form + Zod 4,
+shadcn/ui on Base UI). Maintained by the `frontend-dev` agent. Part 5 (2026-10-30) added the
+authentication screens, the protected routing and the app shell.
+
+### Feature layout
+
+```
+src/app/
+  providers.tsx        QueryClientProvider, <AuthStateSync />, <Toaster /> (sonner)
+  router.tsx           createBrowserRouter: the route map below
+  navigation.ts        sidebar nav items (Part 6 adds workspace/member entries)
+  layouts/             AppLayout (sidebar + header + <Outlet />), SidebarNav, UserMenu, AuthLayout
+  pages/               DashboardPage, NotFoundPage
+src/features/auth/
+  api/                 useSession, useAuthStateSync, useSignIn, useSignUp, useSignOut,
+                       useRequestPasswordReset, useUpdatePassword, useResendConfirmation,
+                       useExchangeAuthCode; keys.ts (['auth', ...])
+  schemas/auth.ts      Zod: signIn, signUp, requestPasswordReset, updatePassword (+ inferred types)
+  lib/auth-errors.ts   GoTrue error code/message -> user-facing text (only place that knows them)
+  lib/auth-redirects.ts  AUTH_ROUTES, callback URL, getSafeRedirect, local mail inbox URL
+  components/          SignInForm, SignUpForm, ForgotPasswordForm, ResetPasswordForm,
+                       ProtectedRoute, PublicOnlyRoute, AuthCard, LocalInboxHint
+  pages/               SignIn, SignUp, ForgotPassword, ResetPassword, VerifyEmail, AuthCallback
+src/features/profile/
+  api/                 useProfile (['profile', userId]), useUpdateProfile
+  schemas/profile.ts   Zod: fullName 1..100
+  lib/                 display-name.ts (name/initials), profile-errors.ts (PostgREST codes -> text)
+  components/pages/    ProfileForm, ProfileSettingsPage
+src/features/workspaces/components/WorkspaceSwitcher.tsx   placeholder slot (Part 6)
+src/components/shared/ FullPageSpinner, RouteErrorBoundary, FormTextField, FormServerError, SubmitButton
+src/components/ui/     shadcn/ui (button, card, input, label, field, dropdown-menu, avatar,
+                       separator, sheet, sonner, skeleton)
+src/lib/supabase.ts    createClient<Database>(anon key, PKCE, detectSessionInUrl: false)
+src/types/database.ts  Row aliases: Profile, Workspace, WorkspaceMember, Invitation, AuditEvent, WorkspaceRole
+src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts, vitest-env.d.ts
+```
+
+Rules applied: every feature owns `api/` (hooks), `schemas/`, `lib/` (domain logic, no React),
+`components/` and `pages/`. Components never talk to Supabase directly; they call hooks. Error
+mapping and validation live in `lib/` and `schemas/` so a future API can replace the Supabase
+calls without touching the UI. Forms use `FormTextField` (React Hook Form `useController`,
+labelled input, inline `FieldError`, `aria-invalid`/`aria-describedby`) and `FormServerError`
+(an always-rendered `role="alert"` live region for server errors).
+
+### Session handling
+
+- `useSession()` reads `['auth', 'session']`: `queryFn` is `supabase.auth.getSession()`
+  (`staleTime: Infinity`, no retry). `getSession()` waits for the client to restore the
+  persisted session, so the first value is already correct and a refresh never flashes the
+  sign-in page: `ProtectedRoute`/`PublicOnlyRoute` render `FullPageSpinner` while `isLoading`.
+- `useAuthStateSync()` (mounted once in `AppProviders`) subscribes to
+  `supabase.auth.onAuthStateChange` and writes every event's session into the cache. On
+  `SIGNED_OUT`, or when a different user signs in, it removes every query whose key does not
+  start with `'auth'` so no profile or workspace data survives across users.
+- Mutations (`useSignIn`, `useSignUp`, `useSignOut`) also write the cache in `onSuccess` so the
+  redirect is immediate. Sign-up passes `options.data.full_name`, which the `handle_new_user`
+  trigger copies into `profiles.full_name`. When email confirmation is on, Supabase answers an
+  existing email with a user whose `identities` is empty; `useSignUp` turns that into
+  `user_already_exists` so the form shows the same message as the unconfirmed flow.
+- `useProfile()` is enabled only once `user.id` is known and keys by it; `useUpdateProfile()`
+  sends only `full_name` (the column grant allows `full_name` and `avatar_url`) and updates
+  plus invalidates `['profile', userId]`.
+
+### Auth flow and email links
+
+The client uses the PKCE flow with `detectSessionInUrl: false`. Every email link
+(`emailRedirectTo` on sign-up and resend, `redirectTo` on password reset) points at
+`<origin>/auth/callback`; GoTrue accepts it because it shares the hostname of `site_url`
+(`supabase/config.toml`; production hosts must add their origin to the redirect allow-list).
+GoTrue redirects to `/auth/callback?code=<pkce code>` or, on failure, appends `error`,
+`error_code` and `error_description`.
+
+`AuthCallbackPage` exchanges the code exactly once through `useExchangeAuthCode` (a query keyed
+by the code, so StrictMode's double mount cannot redeem it twice). supabase-js remembers that a
+verifier belongs to a recovery flow and returns `redirectType: 'recovery'`; the page then
+navigates to `/auth/reset-password` (which needs the session the link just created and shows
+"link invalid or expired" without one) and otherwise to `/`. Locally
+(`enable_confirmations = false`) sign-up signs the user in immediately and emails are captured
+by Mailpit at `http://127.0.0.1:54324`; the verify-email and forgot-password pages show that
+URL in development.
+
+### Route map
+
+| Path                    | Guard             | Element                                                       |
+| ----------------------- | ----------------- | ------------------------------------------------------------- |
+| `/auth/sign-in`         | `PublicOnlyRoute` | `SignInPage` (signed-in users go to `?redirectTo` or `/`)      |
+| `/auth/sign-up`         | `PublicOnlyRoute` | `SignUpPage` -> `/auth/verify-email?email=` when confirmation is required |
+| `/auth/forgot-password` | `PublicOnlyRoute` | `ForgotPasswordPage`                                          |
+| `/auth/verify-email`    | `PublicOnlyRoute` | `VerifyEmailPage` ("check your inbox", resend)                |
+| `/auth/reset-password`  | needs session     | `ResetPasswordPage` (`updateUser({ password })`)              |
+| `/auth/callback`        | none              | `AuthCallbackPage` (code exchange, error display)             |
+| `/`                     | `ProtectedRoute`  | `AppLayout` > `DashboardPage` (greets by `profiles.full_name`) |
+| `/settings/profile`     | `ProtectedRoute`  | `AppLayout` > `ProfileSettingsPage`                           |
+| `/*`                    | `ProtectedRoute`  | `AppLayout` > `NotFoundPage`                                  |
+
+`ProtectedRoute` redirects to `/auth/sign-in?redirectTo=<path+search>`; `getSafeRedirect` only
+honours same-origin paths outside `/auth/`. Both route groups have `RouteErrorBoundary` as
+`errorElement`. `// Part 6: workspaces, members` markers in `router.tsx`, `navigation.ts`,
+`SidebarNav.tsx` and `DashboardPage.tsx` show where workspace routes, the `WorkspaceSwitcher`
+body and the members UI go.
 
 ## Still to come
 

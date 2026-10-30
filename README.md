@@ -24,16 +24,26 @@ Vitest + Testing Library, Playwright, GitHub Actions.
    ```sh
    npm ci
    ```
-2. Create your local environment file and fill in the values from your Supabase project
-   (Project Settings > API). Only the public URL and anon key belong in browser env files;
-   the service-role key must never be added here.
+2. Start the local Supabase stack (Docker must be running) and create your environment file.
+   `.env.local` is git-ignored; only the public URL and anon key belong in browser env files, the
+   service-role key must never be added here.
    ```sh
-   cp .env.example .env.local
+   npm run db:start                 # first run pulls images and applies migrations + seed
+   npx supabase status -o env       # prints API_URL and ANON_KEY (among others)
+   cp .env.example .env.local       # then set:
+   #   VITE_SUPABASE_URL=<API_URL, normally http://127.0.0.1:54321>
+   #   VITE_SUPABASE_ANON_KEY=<ANON_KEY>
    ```
-3. Start the dev server:
+   For a hosted project use the URL and anon key from Project Settings > API instead.
+3. Start the dev server and open <http://localhost:5173>. Sign in with a seed user
+   (`alice@example.com` / `password123`) or create an account.
    ```sh
    npm run dev
    ```
+   The local stack does not deliver email: confirmation and password-reset messages land in
+   the Mailpit inbox at <http://127.0.0.1:54324> (the verify-email and forgot-password screens
+   link to it in development). Locally `enable_confirmations = false`, so sign-up signs you in
+   straight away.
 4. Before opening a pull request, run the same checks CI runs:
    ```sh
    npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build
@@ -42,8 +52,8 @@ Vitest + Testing Library, Playwright, GitHub Actions.
 ## Project layout
 
 ```
-src/app          providers, router, layouts
-src/features     auth, workspaces, members, modules, records, billing (domain logic lives here)
+src/app          providers, router, layouts (AppLayout, AuthLayout), dashboard and 404 pages
+src/features     auth, profile, workspaces, members, modules, records, billing (domain logic lives here)
 src/components   ui (shadcn/ui), shared
 src/lib          supabase client, utilities, validation
 src/hooks        reusable hooks

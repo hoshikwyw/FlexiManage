@@ -75,9 +75,9 @@ Agents: devops-engineer, supabase-engineer, frontend-dev, test-engineer.
 - [ ] Migration 001: `profiles`, `workspaces`, `workspace_members`, `invitations`, `audit_events` with RLS and membership helpers (supabase-engineer).
 - [-] Edge Function `create-workspace` that creates workspace, owner membership and audit event in one transaction (supabase-engineer). Deferred to Phase 4: the `on_workspace_created` trigger from migration 001 already does this atomically; the function is only needed once plan limits must be checked before the insert.
 - [x] Edge Function `invite-member` with role check and audit event (supabase-engineer). Done 2026-10-30 together with `accept-invitation`, the shared toolkit in `supabase/functions/_shared` and migration 002 (`accept_invitation()` SQL function, tested in `supabase/tests/11_accept_invitation_fn.sql`).
-- [ ] Auth screens: sign up, log in, password reset, email verification handling (frontend-dev).
+- [x] Auth screens: sign up, log in, password reset, email verification handling (frontend-dev). Done 2026-10-30: `src/features/auth` (PKCE callback, verify-email with resend, friendly error mapping), see `docs/architecture.md`, Frontend.
 - [ ] Workspace create and switch; members list; invite flow (frontend-dev).
-- [ ] App shell: sidebar layout, protected routes, workspace context (frontend-dev).
+- [x] App shell: sidebar layout, protected routes, workspace context (frontend-dev). Done 2026-10-30 except the workspace context: `AppLayout` (responsive sidebar, user menu), `ProtectedRoute`/`PublicOnlyRoute`, dashboard and profile settings; the `WorkspaceSwitcher` slot and `// Part 6` markers are in place for the workspace context.
 - [x] Cross-workspace denial tests for every table in migration 001 (test-engineer). `supabase/tests/02`–`06`, 2026-10-30.
 - [x] Role enforcement tests for invite and role change (test-engineer). `supabase/tests/07_roles.sql`, `08_last_owner.sql`, 2026-10-30.
 - [ ] Record decisions D5 and D6.
