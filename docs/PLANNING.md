@@ -78,8 +78,8 @@ Agents: devops-engineer, supabase-engineer, frontend-dev, test-engineer.
 - [ ] Auth screens: sign up, log in, password reset, email verification handling (frontend-dev).
 - [ ] Workspace create and switch; members list; invite flow (frontend-dev).
 - [ ] App shell: sidebar layout, protected routes, workspace context (frontend-dev).
-- [ ] Cross-workspace denial tests for every table in migration 001 (test-engineer).
-- [ ] Role enforcement tests for invite and role change (test-engineer).
+- [x] Cross-workspace denial tests for every table in migration 001 (test-engineer). `supabase/tests/02`–`06`, 2026-10-30.
+- [x] Role enforcement tests for invite and role change (test-engineer). `supabase/tests/07_roles.sql`, `08_last_owner.sql`, 2026-10-30.
 - [ ] Record decisions D5 and D6.
 
 Exit criteria: a user can sign up, create a workspace, invite a second user; all isolation tests pass in CI.
@@ -218,15 +218,23 @@ Run with two seeded workspaces (A, B) and one user in each. Every tenant-owned t
 
 | Table | select B as A returns 0 | insert with B id fails | update B row as A affects 0 | delete B row as A affects 0 |
 |-------|:-:|:-:|:-:|:-:|
-| workspaces | [ ] | [ ] | [ ] | [ ] |
-| workspace_members | [ ] | [ ] | [ ] | [ ] |
-| invitations | [ ] | [ ] | [ ] | [ ] |
+| workspaces | [x] | [x] | [x] | [x] |
+| workspace_members | [x] | [x] | [x] | [x] |
+| invitations | [x] | [x] | [x] | [x] |
 | modules | [ ] | [ ] | [ ] | [ ] |
 | field_definitions | [ ] | [ ] | [ ] | [ ] |
 | records | [ ] | [ ] | [ ] | [ ] |
 | attachments (table and storage) | [ ] | [ ] | [ ] | [ ] |
-| audit_events | [ ] | [ ] | [ ] | [ ] |
+| audit_events | [x] | [x] | [x] | [x] |
 | subscriptions / entitlements / usage_counters | [ ] | [ ] | [ ] | [ ] |
+
+Done cells are proven by `supabase/tests/02_isolation_workspaces.sql`, `03_isolation_members.sql`,
+`04_isolation_invitations.sql` and `05_isolation_audit_events.sql` (run with `npm run test:db`, also
+in the CI `db-tests` job). For `invitations` and `audit_events` the update and delete cells are
+satisfied by a stricter rule: `authenticated` has no update grant on `invitations` and no insert,
+update or delete grant on `audit_events`, so the command fails with `permission denied` for every
+row, including the caller's own workspace. `profiles` has no `workspace_id` and is covered
+separately in `06_isolation_profiles.sql` (own row plus shared-workspace visibility only).
 
 Plus: Edge Functions `invite-member` and `export-records` return 403 when the caller is not a member of the target workspace, and 403 when the caller is a `member` for admin-only actions.
 

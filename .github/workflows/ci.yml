@@ -48,3 +48,36 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  db-tests:
+    name: Database tests (pgTAP) and types drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          # Keep in sync with the `supabase` devDependency in package.json.
+          version: 2.122.0
+
+      - name: Start local Supabase stack
+        # A fresh start applies supabase/migrations and supabase/seed.sql.
+        run: supabase start
+
+      - name: Run pgTAP tests
+        run: supabase test db
+
+      - name: Check generated types for drift
+        run: |
+          supabase gen types typescript --local > /tmp/supabase.ts
+          if ! diff -u src/types/supabase.ts /tmp/supabase.ts; then
+            echo "::error file=src/types/supabase.ts::Generated types are out of date. Run 'npm run db:types' and commit the result."
+            exit 1
+          fi
+
+      - name: Stop local Supabase stack
+        if: always()
+        run: supabase stop --no-backup

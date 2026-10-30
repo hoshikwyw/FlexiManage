@@ -216,8 +216,10 @@ Alice is not a member of B and Bob is not a member of A. The seed inserts `auth.
 
 ## Still to come
 
-- Part 3: pgTAP/SQL tests in `supabase/tests` proving the matrix above and the cross-workspace
-  denials in `docs/PLANNING.md` section 7 for all five tables.
+- Part 3 (done 2026-10-30): pgTAP tests in `supabase/tests` (`01_rls_enabled` through `10_anon`)
+  prove the matrix above, the role table, the last-owner guard, the audit triggers and the
+  cross-workspace denials in `docs/PLANNING.md` section 7 for all five tables. Run with
+  `npm run test:db`; CI job `db-tests`.
 - Part 4: Edge Functions `create-workspace` (may replace the `on_workspace_created` trigger when
   plan limits land), `invite-member`, `accept-invitation` (the only path that updates
   `invitations.accepted_at`).

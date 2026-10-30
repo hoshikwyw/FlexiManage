@@ -70,6 +70,9 @@ Add shadcn/ui components with `npx shadcn@latest add <component>`; they land in 
 | `npm run test`         | Run unit and component tests once with Vitest (jsdom).                          |
 | `npm run test:watch`   | Run Vitest in watch mode.                                                       |
 | `npm run test:e2e`     | Run Playwright end-to-end tests in `tests/e2e` (builds and previews first).     |
+| `npm run test:db`      | Run the pgTAP database tests in `supabase/tests` against the local stack.       |
+| `npm run db:start`     | Start the local Supabase stack in Docker (`supabase start`).                    |
+| `npm run db:stop`      | Stop the local Supabase stack (`supabase stop`).                                |
 | `npm run db:reset`     | Reset the local Supabase database and re-apply migrations and seed.             |
 | `npm run db:types`     | Generate TypeScript types from the local database into `src/types/supabase.ts`. |
 
@@ -78,11 +81,17 @@ Add shadcn/ui components with `npx shadcn@latest add <component>`; they land in 
 The database runs locally in Docker through the Supabase CLI (`supabase/config.toml`).
 
 ```sh
-npx supabase start      # first run pulls images; prints API URL, anon key, Studio URL
+npm run db:start        # first run pulls images; prints API URL, anon key, Studio URL
 npm run db:reset        # apply supabase/migrations and supabase/seed.sql from scratch
 npm run db:types        # regenerate src/types/supabase.ts from the local schema
-npx supabase stop       # stop the containers
+npm run test:db         # run the RLS / role / trigger tests in supabase/tests (pgTAP)
+npm run db:stop         # stop the containers
 ```
+
+The database tests (`supabase/tests/*.sql`) prove tenant isolation for every table in migration
+001: each file runs in one transaction that is rolled back, impersonates the seeded users by
+setting `role` and `request.jwt.claims` the way PostgREST does, and asserts the allow and deny
+cases of `docs/architecture.md`'s policy matrix. New tables must ship with their own file.
 
 Point `.env.local` at the local stack with `VITE_SUPABASE_URL=http://127.0.0.1:54321` and the
 anon key printed by `npx supabase status`. Seed users: `alice@example.com` (owns `workspace-a`)
@@ -93,5 +102,6 @@ and `bob@example.com` (owns `workspace-b`), password `password123`; fixed ids li
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request: install, typecheck, lint, format
-check, unit tests and build on Node 24 with the npm cache enabled. Database tests and Playwright
-jobs are added when the Supabase stack is configured (Phase 2).
+check, unit tests and build on Node 24 with the npm cache enabled (`verify`), and in parallel starts
+the local Supabase stack, runs the pgTAP tests and fails if `src/types/supabase.ts` is out of date
+with the migrations (`db-tests`). A Playwright job follows once the primary journey exists.

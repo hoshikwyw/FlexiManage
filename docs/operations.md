@@ -1,7 +1,7 @@
 # Operations
 
 Runtime and tooling notes for operators. Updated by the `devops-engineer` agent.
-Last updated: 2026-10-30 (Part 2: local Supabase).
+Last updated: 2026-10-30 (Part 3: database tests and CI `db-tests` job).
 
 ## Environments
 
@@ -42,12 +42,31 @@ the CLI is installed globally).
 
 | Command                             | What it does                                                                                                |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `npx supabase start`                | Pull images on first run and start the stack. Prints the API URL, anon key and Studio URL.                  |
+| `npm run db:start`                  | `supabase start`: pull images on first run and start the stack. Prints the API URL, anon key and Studio URL. |
 | `npx supabase status`               | Show URLs and keys of the running stack.                                                                    |
 | `npm run db:reset`                  | `supabase db reset`: drop the local database, re-apply every file in `supabase/migrations`, run `seed.sql`. |
 | `npm run db:types`                  | `supabase gen types typescript --local > src/types/supabase.ts`. Run after every migration change.          |
+| `npm run test:db`                   | `supabase test db`: run every `supabase/tests/*.sql` file with pgTAP (pg_prove in a container) against the local database. |
 | `npx supabase migration new <name>` | Create an empty timestamped migration file.                                                                 |
-| `npx supabase stop`                 | Stop the containers (data is kept in a Docker volume; `--no-backup` discards it).                           |
+| `npm run db:stop`                   | `supabase stop`: stop the containers (data is kept in a Docker volume; `--no-backup` discards it).          |
+
+### Database tests
+
+`npm run test:db` needs the stack running (`npm run db:start`) and a database that matches the
+migrations and seed (`npm run db:reset` after any schema or seed change). The CLI installs the
+`pgtap` extension in the `extensions` schema if it is missing and runs `pg_prove` over
+`supabase/tests` in file-name order. Conventions:
+
+- Files are numbered (`01_rls_enabled.sql` ... `10_anon.sql`) and each wraps everything in
+  `begin; select plan(N); ... select * from finish(); rollback;`, so a run leaves no data behind.
+- Users are impersonated the way PostgREST does: `set local role authenticated` plus
+  `set_config('request.jwt.claims', '{"sub": "<uuid>", "role": "authenticated"}', true)`. Each file
+  defines the small `tests.login_as(uuid)`, `tests.logout()` and `tests.rows_affected(sql)` helpers
+  inside its transaction. Extra users and memberships are inserted as `postgres` before
+  impersonating.
+- Fixed ids come from `supabase/seed.sql` / `tests/fixtures/ids.ts` (alice owns A, bob owns B).
+- A failing test that exposes a schema bug is fixed with a new migration, never by editing an
+  applied one or by weakening the assertion.
 
 Local ports: API `54321`, Postgres `54322`, Studio `54323`, mail `54324`. Connection string for
 psql or `supabase db query`: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`.
@@ -67,19 +86,24 @@ edit an applied file, add a new one and run `npm run db:reset`.
 
 ## CI
 
-`.github/workflows/ci.yml`: one `verify` job on `ubuntu-latest` running typecheck, lint, format
-check, unit tests and build. Actions pinned to major versions (`actions/checkout@v4`,
-`actions/setup-node@v4`), npm cache enabled, concurrency cancels superseded runs on the same ref.
+`.github/workflows/ci.yml` has two independent jobs on `ubuntu-latest`. Actions are pinned to major
+versions (`actions/checkout@v4`, `actions/setup-node@v4`, `supabase/setup-cli@v1`), the npm cache
+is enabled and concurrency cancels superseded runs on the same ref.
 
-Planned (Part 3 / Phase 2): a `db-tests` job that starts the local Supabase stack
-(`supabase/setup-cli` action; Docker is available on `ubuntu-latest`), runs `supabase db reset`
-and the RLS denial tests in `supabase/tests`, and checks that `npm run db:types` produces no diff.
-An `e2e` job on pull requests to `main` with Playwright browsers cached follows.
+- `verify`: typecheck, lint, format check, unit tests and build.
+- `db-tests`: installs the Supabase CLI pinned to `2.122.0` (same as the devDependency), runs
+  `supabase start` (Docker is available on `ubuntu-latest`; a fresh start applies the migrations
+  and `seed.sql`), then `supabase test db`, then regenerates the TypeScript types with
+  `supabase gen types typescript --local` and fails on any diff against `src/types/supabase.ts`
+  ("types drift"). Fix drift locally with `npm run db:types` and commit the result.
+
+Planned: an `e2e` job on pull requests to `main` with Playwright browsers cached.
 
 ## Free-tier notes
 
 - GitHub Actions: free minutes for public repositories; private repositories have a monthly
-  quota. The `verify` job runs in about 2 minutes.
+  quota. The `verify` job runs in about 2 minutes; `db-tests` adds roughly 3 to 5 minutes, most of
+  it pulling the Supabase Docker images.
 - Supabase: the free tier pauses projects after inactivity. Move to a paid tier before Phase 6
   (pilots) and enable point-in-time recovery then.
 
