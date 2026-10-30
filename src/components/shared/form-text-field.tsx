@@ -13,6 +13,7 @@ interface FormTextFieldProps<TFieldValues extends FieldValues> {
   placeholder?: string
   description?: string
   disabled?: boolean
+  autoFocus?: boolean
 }
 
 /**
@@ -29,6 +30,7 @@ export function FormTextField<TFieldValues extends FieldValues>({
   placeholder,
   description,
   disabled,
+  autoFocus,
 }: FormTextFieldProps<TFieldValues>) {
   const id = useId()
   const errorId = `${id}-error`
@@ -49,6 +51,7 @@ export function FormTextField<TFieldValues extends FieldValues>({
         type={type}
         autoComplete={autoComplete}
         placeholder={placeholder}
+        autoFocus={autoFocus}
         disabled={disabled || field.disabled}
         value={(field.value as string | undefined) ?? ''}
         onChange={field.onChange}

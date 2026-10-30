@@ -20,6 +20,9 @@ export function createSupabaseMock() {
       exchangeCodeForSession: vi.fn(),
     },
     from: vi.fn(),
+    functions: {
+      invoke: vi.fn(),
+    },
   }
 }
 

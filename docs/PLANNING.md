@@ -76,13 +76,26 @@ Agents: devops-engineer, supabase-engineer, frontend-dev, test-engineer.
 - [-] Edge Function `create-workspace` that creates workspace, owner membership and audit event in one transaction (supabase-engineer). Deferred to Phase 4: the `on_workspace_created` trigger from migration 001 already does this atomically; the function is only needed once plan limits must be checked before the insert.
 - [x] Edge Function `invite-member` with role check and audit event (supabase-engineer). Done 2026-10-30 together with `accept-invitation`, the shared toolkit in `supabase/functions/_shared` and migration 002 (`accept_invitation()` SQL function, tested in `supabase/tests/11_accept_invitation_fn.sql`).
 - [x] Auth screens: sign up, log in, password reset, email verification handling (frontend-dev). Done 2026-10-30: `src/features/auth` (PKCE callback, verify-email with resend, friendly error mapping), see `docs/architecture.md`, Frontend.
-- [ ] Workspace create and switch; members list; invite flow (frontend-dev).
-- [x] App shell: sidebar layout, protected routes, workspace context (frontend-dev). Done 2026-10-30 except the workspace context: `AppLayout` (responsive sidebar, user menu), `ProtectedRoute`/`PublicOnlyRoute`, dashboard and profile settings; the `WorkspaceSwitcher` slot and `// Part 6` markers are in place for the workspace context.
+- [x] Workspace create and switch; members list; invite flow (frontend-dev). Done 2026-10-30: `src/features/workspaces` (switcher, create dialog and first-run page, settings and danger zone, `WorkspaceProvider`, workspace-scoped routes `/w/:workspaceId/...`) and `src/features/members` (members table with role/remove/leave actions, invite form calling `invite-member`, pending invitations with revoke, `/invite/:token` acceptance page); dashboard shows the workspace list and recent audit events. See `docs/architecture.md`, Frontend.
+- [x] App shell: sidebar layout, protected routes, workspace context (frontend-dev). Done 2026-10-30: `AppLayout` (responsive sidebar, user menu), `ProtectedRoute`/`PublicOnlyRoute`, dashboard and profile settings; the workspace context (`WorkspaceProvider`) landed with the item above.
 - [x] Cross-workspace denial tests for every table in migration 001 (test-engineer). `supabase/tests/02`–`06`, 2026-10-30.
 - [x] Role enforcement tests for invite and role change (test-engineer). `supabase/tests/07_roles.sql`, `08_last_owner.sql`, 2026-10-30.
 - [ ] Record decisions D5 and D6.
 
 Exit criteria: a user can sign up, create a workspace, invite a second user; all isolation tests pass in CI.
+Met 2026-10-30: verified end to end against the local stack (sign up, create "Pilot Co", invite
+bob@example.com, accept through `/invite/:token`, leave, delete); `supabase test db` passes in the
+`db-tests` CI job. Open items D5/D6 are documentation only and do not block M2.
+
+Follow-ups from Phase 2 (scheduled in Phase 4 unless noted):
+- Invitation email delivery (provider + template): `invite-member` creates the row and the audit
+  event but no email is sent yet; locally the token is read from the database
+  (`docs/operations.md`). The members page tells the inviter an email will be sent.
+- Code-splitting: the main Vite chunk is above 500 kB (supabase-js, Base UI, TanStack Query);
+  `React.lazy` for route pages or a `manualChunks` split, before Phase 5 performance checks.
+- PostgREST embedding for `workspace_members.user_id` and `audit_events.actor_id`: both reference
+  `auth.users`, so the UI loads profiles in a second query. A migration adding
+  `references public.profiles` (or a view) would allow a single embedded select (supabase-engineer).
 
 ### Phase 3: Core workflow (2026-12-07 to 2026-12-26) — Milestone M3: Usable product
 

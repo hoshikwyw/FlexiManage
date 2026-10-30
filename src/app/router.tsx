@@ -13,7 +13,14 @@ import { ResetPasswordPage } from '@/features/auth/pages/ResetPasswordPage'
 import { SignInPage } from '@/features/auth/pages/SignInPage'
 import { SignUpPage } from '@/features/auth/pages/SignUpPage'
 import { VerifyEmailPage } from '@/features/auth/pages/VerifyEmailPage'
+import { AcceptInvitationPage } from '@/features/members/pages/AcceptInvitationPage'
+import { MembersPage } from '@/features/members/pages/MembersPage'
 import { ProfileSettingsPage } from '@/features/profile/pages/ProfileSettingsPage'
+import { WorkspaceProvider } from '@/features/workspaces/context/WorkspaceProvider'
+import { CreateWorkspacePage } from '@/features/workspaces/pages/CreateWorkspacePage'
+import { RootRedirect } from '@/features/workspaces/pages/RootRedirect'
+import { WorkspaceRoute } from '@/features/workspaces/pages/WorkspaceRoute'
+import { WorkspaceSettingsPage } from '@/features/workspaces/pages/WorkspaceSettingsPage'
 
 /**
  * Route map
@@ -24,11 +31,16 @@ import { ProfileSettingsPage } from '@/features/profile/pages/ProfileSettingsPag
  *     verify-email
  *     reset-password           needs the session created by the recovery link
  *     callback                 exchanges the PKCE code from email links
- *   /                          ProtectedRoute -> AppLayout (sidebar + header)
- *     (index)                  DashboardPage
+ *   /                          ProtectedRoute -> WorkspaceProvider -> AppLayout (sidebar + header)
+ *     (index)                  RootRedirect: /w/<current workspace> or /workspaces/new
+ *     workspaces/new           CreateWorkspacePage (first run, or full-page create)
+ *     w/:workspaceId           WorkspaceRoute: selects the workspace from the URL, 404 for non-members
+ *       (index)                DashboardPage
+ *       members                MembersPage
+ *       settings               WorkspaceSettingsPage
+ *     invite/:token            AcceptInvitationPage (sign-in redirect keeps the path)
  *     settings/profile         ProfileSettingsPage
- *     // Part 6: workspaces, members
- *   *                          NotFoundPage
+ *     *                        NotFoundPage
  */
 export const router = createBrowserRouter([
   {
@@ -53,18 +65,26 @@ export const router = createBrowserRouter([
     path: '/',
     element: (
       <ProtectedRoute>
-        <AppLayout />
+        <WorkspaceProvider>
+          <AppLayout />
+        </WorkspaceProvider>
       </ProtectedRoute>
     ),
     errorElement: <RouteErrorBoundary />,
     children: [
-      { index: true, element: <DashboardPage /> },
+      { index: true, element: <RootRedirect /> },
+      { path: 'workspaces/new', element: <CreateWorkspacePage /> },
+      {
+        path: 'w/:workspaceId',
+        element: <WorkspaceRoute />,
+        children: [
+          { index: true, element: <DashboardPage /> },
+          { path: 'members', element: <MembersPage /> },
+          { path: 'settings', element: <WorkspaceSettingsPage /> },
+        ],
+      },
+      { path: 'invite/:token', element: <AcceptInvitationPage /> },
       { path: 'settings/profile', element: <ProfileSettingsPage /> },
-      // Part 6: workspaces, members
-      // { path: 'workspaces/new', element: <CreateWorkspacePage /> },
-      // { path: 'workspaces/:slug', element: <WorkspaceLayout />, children: [
-      //   { path: 'members', element: <MembersPage /> },
-      // ] },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

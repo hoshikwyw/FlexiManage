@@ -1,8 +1,9 @@
 import { NavLink } from 'react-router-dom'
 
-import { primaryNavItems, settingsNavItems, type NavItem } from '@/app/navigation'
+import { getPrimaryNavItems, settingsNavItems, type NavItem } from '@/app/navigation'
 import { Separator } from '@/components/ui/separator'
 import { WorkspaceSwitcher } from '@/features/workspaces/components/WorkspaceSwitcher'
+import { useCurrentWorkspace } from '@/features/workspaces/context/workspace-context'
 import { cn } from '@/lib/utils'
 
 interface SidebarNavProps {
@@ -12,16 +13,20 @@ interface SidebarNavProps {
 
 /** Sidebar content shared by the desktop aside and the mobile sheet. */
 export function SidebarNav({ onNavigate }: SidebarNavProps) {
+  const { workspaceId, role } = useCurrentWorkspace()
+  const primaryNavItems = getPrimaryNavItems(workspaceId, role)
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex min-h-14 flex-col justify-center gap-2 px-4 py-3">
         <span className="font-heading text-lg font-semibold tracking-tight">FlexiManage</span>
-        {/* Part 6: workspaces, members. The switcher renders nothing until then. */}
-        <WorkspaceSwitcher />
+        <WorkspaceSwitcher onNavigate={onNavigate} />
       </div>
       <Separator />
       <nav aria-label="Main" className="flex flex-1 flex-col gap-6 overflow-y-auto p-3">
-        <NavSection items={primaryNavItems} onNavigate={onNavigate} />
+        {primaryNavItems.length > 0 ? (
+          <NavSection items={primaryNavItems} onNavigate={onNavigate} />
+        ) : null}
         <NavSection title="Settings" items={settingsNavItems} onNavigate={onNavigate} />
       </nav>
     </div>

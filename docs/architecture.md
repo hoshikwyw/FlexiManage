@@ -314,7 +314,9 @@ trigger writes `invitation.revoked`.
 
 React SPA (Vite, TypeScript strict, React Router 7, TanStack Query 5, React Hook Form + Zod 4,
 shadcn/ui on Base UI). Maintained by the `frontend-dev` agent. Part 5 (2026-10-30) added the
-authentication screens, the protected routing and the app shell.
+authentication screens, the protected routing and the app shell; Part 6 (2026-10-30) added the
+workspaces and members features, the workspace context and the workspace-scoped route map,
+completing Phase 2.
 
 ### Feature layout
 
@@ -322,9 +324,10 @@ authentication screens, the protected routing and the app shell.
 src/app/
   providers.tsx        QueryClientProvider, <AuthStateSync />, <Toaster /> (sonner)
   router.tsx           createBrowserRouter: the route map below
-  navigation.ts        sidebar nav items (Part 6 adds workspace/member entries)
+  navigation.ts        getPrimaryNavItems(workspaceId, role) -> Dashboard, Members, Workspace
+                       settings (owner/admin); settingsNavItems -> Profile
   layouts/             AppLayout (sidebar + header + <Outlet />), SidebarNav, UserMenu, AuthLayout
-  pages/               DashboardPage, NotFoundPage
+  pages/               DashboardPage (greeting, WorkspaceList, RecentActivity), NotFoundPage
 src/features/auth/
   api/                 useSession, useAuthStateSync, useSignIn, useSignUp, useSignOut,
                        useRequestPasswordReset, useUpdatePassword, useResendConfirmation,
@@ -340,13 +343,57 @@ src/features/profile/
   schemas/profile.ts   Zod: fullName 1..100
   lib/                 display-name.ts (name/initials), profile-errors.ts (PostgREST codes -> text)
   components/pages/    ProfileForm, ProfileSettingsPage
-src/features/workspaces/components/WorkspaceSwitcher.tsx   placeholder slot (Part 6)
-src/components/shared/ FullPageSpinner, RouteErrorBoundary, FormTextField, FormServerError, SubmitButton
+src/features/workspaces/
+  api/                 useWorkspaces(userId) (['workspaces', userId]: workspace_members with
+                       workspaces(*) embedded, sorted by name), useWorkspace(id) (['workspace', id]),
+                       useCreateWorkspace (insert { name, slug, created_by }; the trigger adds the
+                       owner row and audit event), useUpdateWorkspace(id), useDeleteWorkspace,
+                       useAuditEvents(workspaceId, limit) (['audit', id, { limit }]); keys.ts
+  schemas/workspace.ts Zod: name 1..100 trimmed, slug ^[a-z0-9]+(-[a-z0-9]+)*$ max 60
+  lib/                 slug.ts (slugify, SLUG_PATTERN), workspace-errors.ts (23505 -> "slug
+                       already taken", 23514, 42501, PGRST116, WorkspaceNotFoundError),
+                       workspace-permissions.ts (canManageWorkspace o/a, canDeleteWorkspace owner),
+                       workspace-routes.ts (WORKSPACE_ROUTES, swapWorkspaceInPath),
+                       workspace-storage.ts (localStorage per user), audit-labels.ts (action ->
+                       sentence, actor name or "Someone")
+  context/             workspace-context.ts (WorkspaceContext, useCurrentWorkspace),
+                       WorkspaceProvider.tsx
+  components/          WorkspaceSwitcher, CreateWorkspaceDialog, CreateWorkspaceForm,
+                       WorkspaceSettingsForm, DangerZone, WorkspaceList, RecentActivity
+  pages/               RootRedirect, WorkspaceRoute, CreateWorkspacePage, WorkspaceSettingsPage
+  types.ts             WorkspaceMembership { workspace, role, joinedAt }, AuditEventWithActor
+src/features/members/
+  api/                 useMembers(workspaceId) (['members', id]: workspace_members + a second
+                       profiles query, owners first), useInvitations(workspaceId, { enabled })
+                       (['invitations', id], pending only, never selects token), useInviteMember
+                       (functions.invoke('invite-member')), useRevokeInvitation (delete under RLS),
+                       useChangeMemberRole (update role, owner only), useRemoveMember (delete:
+                       remove or self-leave), useAcceptInvitation(token) (query keyed by token,
+                       functions.invoke('accept-invitation'), retry false); keys.ts
+  schemas/invite.ts    Zod: email (shared emailSchema), role enum
+  lib/                 member-errors.ts (MemberActionError { code }, parseFunctionError reads
+                       `await error.context.json()` of a FunctionsHttpError and falls back to the
+                       HTTP status, memberErrorFromPostgrest maps P0001 "last owner" -> last_owner,
+                       getMemberErrorMessage), member-permissions.ts (canInvite, invitableRoles,
+                       canChangeRole, canRemoveMember: the policy matrix in TypeScript)
+  components/          MembersTable (+ skeleton), MemberActionsMenu (change role / remove / leave
+                       with confirm dialog), InviteMemberForm, PendingInvitations
+  pages/               MembersPage, AcceptInvitationPage
+  types.ts             Member (row + profile), FunctionErrorCode, InviteMemberResult,
+                       AcceptInvitationResult
+src/components/shared/ FullPageSpinner, RouteErrorBoundary, FormTextField, FormSelectField,
+                       FormServerError, SubmitButton, RoleBadge
 src/components/ui/     shadcn/ui (button, card, input, label, field, dropdown-menu, avatar,
-                       separator, sheet, sonner, skeleton)
+                       separator, sheet, sonner, skeleton, dialog, alert-dialog, badge, table,
+                       native-select)
 src/lib/supabase.ts    createClient<Database>(anon key, PKCE, detectSessionInUrl: false)
-src/types/database.ts  Row aliases: Profile, Workspace, WorkspaceMember, Invitation, AuditEvent, WorkspaceRole
-src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts, vitest-env.d.ts
+src/lib/               format.ts (formatDate/formatDateTime), postgrest-errors.ts
+                       (isPostgrestError, isNetworkError), workspace-roles.ts (getRoleLabel)
+src/types/database.ts  Row aliases: Profile, Workspace, WorkspaceMember, Invitation, AuditEvent,
+                       WorkspaceRole, WORKSPACE_ROLES
+src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts (auth, from,
+                       functions.invoke), workspace-context.tsx (stubbed WorkspaceProvider value),
+                       vitest-env.d.ts
 ```
 
 Rules applied: every feature owns `api/` (hooks), `schemas/`, `lib/` (domain logic, no React),
@@ -393,25 +440,84 @@ navigates to `/auth/reset-password` (which needs the session the link just creat
 by Mailpit at `http://127.0.0.1:54324`; the verify-email and forgot-password pages show that
 URL in development.
 
+### Workspace context
+
+`WorkspaceProvider` (mounted once, inside `ProtectedRoute` around `AppLayout`) owns the current
+workspace. It reads `useWorkspaces(user.id)`, remembers the selection in localStorage under
+`fleximanage.currentWorkspace.<userId>` (so two accounts in one browser never share a choice),
+defaults to the first workspace by name and falls back to the first remaining one when the
+selected workspace disappears (left or deleted). `useCurrentWorkspace()` exposes
+`{ workspaces, workspace, role, workspaceId, setWorkspaceId, isLoading, isError, refetch }`.
+The selection is derived during render (no setState in effects); the only effect persists the
+effective choice to storage.
+
+Workspace pages live under `/w/:workspaceId`. `WorkspaceRoute` makes the URL the source of
+truth: it calls `setWorkspaceId(param)` when the user is a member, renders a "Workspace not
+found" page (404 copy, link to `/`) when not, and only renders the child page once the provider
+agrees with the URL, so `useCurrentWorkspace()` in a page always matches the address bar.
+`RootRedirect` sends `/` to `/w/<current>` or, for a user with no workspace, to
+`/workspaces/new`. The switcher keeps the sub-page when switching (`swapWorkspaceInPath`:
+`/w/A/members` -> `/w/B/members`). Nav links are built from the current workspace id
+(`getPrimaryNavItems`); "Workspace settings" is listed for owners and admins only.
+
+Permission helpers (`workspace-permissions.ts`, `member-permissions.ts`) mirror the policy
+matrix above and are used only to hide controls: owners change roles; owners and admins invite
+and remove (admins not owners); anyone may leave; only an owner may grant the owner role or
+delete the workspace. Every write still goes through RLS, the last-owner trigger or the Edge
+Functions, and the mapped error (`last_owner`, `forbidden`, ...) is shown as a toast or inline.
+
+Writes that RLS filters to zero rows produce no Postgres error, so the delete hooks ask for the
+affected ids (`.select('id')`) and throw `WorkspaceNotFoundError` / `MemberActionError('forbidden')`
+when nothing came back; single-row updates use `.single()` so the zero-row case surfaces as
+`PGRST116`. `workspace_members.user_id` and `audit_events.actor_id` reference `auth.users`, not
+`profiles`, so `useMembers` and `useAuditEvents` load the visible profiles in a second query
+(`.in('id', ...)`), falling back to "Someone" when RLS hides an actor.
+
+### Invite acceptance (UI side)
+
+1. Owner/admin submits `InviteMemberForm` on `/w/:id/members`; `useInviteMember` calls
+   `functions.invoke('invite-member', { body: { workspaceId, email, role } })`. A
+   `FunctionsHttpError` is turned into `MemberActionError` by reading
+   `await error.context.json()` (`error.code`), falling back to the HTTP status for bodies that
+   are not the project envelope (the edge runtime's own 401). `conflict` -> "already a member",
+   `forbidden`, `validation_error`, `unauthorized`, `internal` each have one message in
+   `member-errors.ts`. The pending list refetches; no email is sent yet (Phase 4 follow-up), and
+   the form says so. Locally the token is read from the database (`docs/operations.md`).
+2. The invitee opens `/invite/<token>`. The route is protected, so a signed-out user is sent to
+   `/auth/sign-in?redirectTo=%2Finvite%2F<token>` and returns to it after signing in.
+3. `AcceptInvitationPage` runs `useAcceptInvitation(token)`: a query keyed by the token (not a
+   mutation in an effect), so StrictMode's double mount cannot redeem the token twice;
+   `retry: false` because every error is final. The query refetches the workspace list before
+   resolving, then the page calls `setWorkspaceId(workspaceId)`, toasts "Joined <name>" and
+   navigates to `/w/<workspaceId>`. `not_found` (404) -> "This invitation is no longer valid",
+   `invitation_expired` (410) -> "has expired", `forbidden` (403) -> "sent to a different email
+   address; sign in with that account"; every error state offers "Go to my workspaces".
+4. Revoking is a direct delete under RLS (`useRevokeInvitation`); the trigger writes
+   `invitation.revoked`, which the dashboard's "Recent activity" shows through `audit-labels.ts`.
+
 ### Route map
 
-| Path                    | Guard             | Element                                                       |
-| ----------------------- | ----------------- | ------------------------------------------------------------- |
-| `/auth/sign-in`         | `PublicOnlyRoute` | `SignInPage` (signed-in users go to `?redirectTo` or `/`)      |
-| `/auth/sign-up`         | `PublicOnlyRoute` | `SignUpPage` -> `/auth/verify-email?email=` when confirmation is required |
-| `/auth/forgot-password` | `PublicOnlyRoute` | `ForgotPasswordPage`                                          |
-| `/auth/verify-email`    | `PublicOnlyRoute` | `VerifyEmailPage` ("check your inbox", resend)                |
-| `/auth/reset-password`  | needs session     | `ResetPasswordPage` (`updateUser({ password })`)              |
-| `/auth/callback`        | none              | `AuthCallbackPage` (code exchange, error display)             |
-| `/`                     | `ProtectedRoute`  | `AppLayout` > `DashboardPage` (greets by `profiles.full_name`) |
-| `/settings/profile`     | `ProtectedRoute`  | `AppLayout` > `ProfileSettingsPage`                           |
-| `/*`                    | `ProtectedRoute`  | `AppLayout` > `NotFoundPage`                                  |
+| Path                      | Guard             | Element                                                                  |
+| ------------------------- | ----------------- | ------------------------------------------------------------------------ |
+| `/auth/sign-in`           | `PublicOnlyRoute` | `SignInPage` (signed-in users go to `?redirectTo` or `/`)                 |
+| `/auth/sign-up`           | `PublicOnlyRoute` | `SignUpPage` -> `/auth/verify-email?email=` when confirmation is required |
+| `/auth/forgot-password`   | `PublicOnlyRoute` | `ForgotPasswordPage`                                                     |
+| `/auth/verify-email`      | `PublicOnlyRoute` | `VerifyEmailPage` ("check your inbox", resend)                           |
+| `/auth/reset-password`    | needs session     | `ResetPasswordPage` (`updateUser({ password })`)                         |
+| `/auth/callback`          | none              | `AuthCallbackPage` (code exchange, error display)                        |
+| `/`                       | `ProtectedRoute`  | `WorkspaceProvider` > `AppLayout` > `RootRedirect` (-> `/w/<current>` or `/workspaces/new`) |
+| `/workspaces/new`         | `ProtectedRoute`  | `AppLayout` > `CreateWorkspacePage` (first-run page; also reachable with workspaces) |
+| `/w/:workspaceId`         | `ProtectedRoute`  | `AppLayout` > `WorkspaceRoute` > `DashboardPage` (workspaces list, recent activity) |
+| `/w/:workspaceId/members` | `ProtectedRoute`  | `WorkspaceRoute` > `MembersPage` (table, invite form o/a, pending invitations o/a) |
+| `/w/:workspaceId/settings`| `ProtectedRoute`  | `WorkspaceRoute` > `WorkspaceSettingsPage` (general form; danger zone for owners) |
+| `/invite/:token`          | `ProtectedRoute`  | `AppLayout` > `AcceptInvitationPage`                                     |
+| `/settings/profile`       | `ProtectedRoute`  | `AppLayout` > `ProfileSettingsPage` (global, not workspace-scoped)       |
+| `/*`                      | `ProtectedRoute`  | `AppLayout` > `NotFoundPage`                                             |
 
 `ProtectedRoute` redirects to `/auth/sign-in?redirectTo=<path+search>`; `getSafeRedirect` only
 honours same-origin paths outside `/auth/`. Both route groups have `RouteErrorBoundary` as
-`errorElement`. `// Part 6: workspaces, members` markers in `router.tsx`, `navigation.ts`,
-`SidebarNav.tsx` and `DashboardPage.tsx` show where workspace routes, the `WorkspaceSwitcher`
-body and the members UI go.
+`errorElement`. A non-member visiting `/w/<id>` gets `WorkspaceRoute`'s not-found page (RLS
+returns nothing for that id either way, so existence is not revealed).
 
 ## Still to come
 
@@ -423,6 +529,9 @@ body and the members UI go.
   `11_accept_invitation_fn.sql`), Edge Functions `invite-member` and `accept-invitation` with the
   shared toolkit. `create-workspace` is deferred to Phase 4: the `on_workspace_created` trigger
   stays the creation path until plan limits must be checked before the insert.
+- Part 6 (done 2026-10-30): workspaces and members UI, `WorkspaceProvider`, workspace-scoped
+  routes and the invite acceptance page; Phase 2 exit criteria met. Follow-ups recorded in
+  `docs/PLANNING.md` (invitation email delivery, code-splitting, profile FKs for embedding).
 - Phase 3: migration 003 (`modules`, `field_definitions`, `records`, `attachments`) and the
   `attachments` storage bucket; Edge Function `export-records`.
 - Phase 4: billing tables, `check_entitlement` and `create-workspace`.

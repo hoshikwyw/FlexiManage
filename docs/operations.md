@@ -108,8 +108,11 @@ curl -s -X POST http://127.0.0.1:54321/functions/v1/invite-member \
   -d '{"workspaceId":"00000000-0000-0000-0000-0000000000aa","email":"bob@example.com","role":"member"}'
 ```
 
-The invitation token is never returned by the API; for local testing read it from the database
-(`select token from public.invitations where email = 'bob@example.com'`).
+The invitation token is never returned by the API and no email is sent yet (Phase 4 follow-up);
+for local testing read it from the database
+(`select token from public.invitations where email = 'bob@example.com' and accepted_at is null`)
+and open `http://localhost:5173/invite/<token>` as the invitee. The dev server and
+`npm run functions:serve` must both be running for the invite and accept flows.
 
 Local ports: API `54321`, Postgres `54322`, Studio `54323`, mail `54324`. Connection string for
 psql or `supabase db query`: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`.

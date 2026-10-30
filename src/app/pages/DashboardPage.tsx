@@ -1,13 +1,19 @@
-import { useProfile } from '@/features/profile/api/use-profile'
-import { getDisplayName } from '@/features/profile/lib/display-name'
-import { useSession } from '@/features/auth/api/use-session'
+import { getRoleLabel } from '@/lib/workspace-roles'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useSession } from '@/features/auth/api/use-session'
+import { useProfile } from '@/features/profile/api/use-profile'
+import { getDisplayName } from '@/features/profile/lib/display-name'
+import { RecentActivity } from '@/features/workspaces/components/RecentActivity'
+import { WorkspaceList } from '@/features/workspaces/components/WorkspaceList'
+import { useCurrentWorkspace } from '@/features/workspaces/context/workspace-context'
 
+/** `/w/:workspaceId`: greeting, the user's workspaces and the current workspace's activity. */
 export function DashboardPage() {
   const { user } = useSession()
   const profile = useProfile()
+  const { workspace, role } = useCurrentWorkspace()
 
   return (
     <div className="flex flex-col gap-6">
@@ -19,9 +25,13 @@ export function DashboardPage() {
             Welcome back, {getDisplayName(profile.data, user?.email)}
           </h1>
         )}
-        <p className="text-muted-foreground text-sm">
-          This is your dashboard. Workspaces and their records will appear here.
-        </p>
+        {workspace && role ? (
+          <p className="text-muted-foreground text-sm">
+            You are {role === 'owner' || role === 'admin' ? 'an' : 'a'}{' '}
+            {getRoleLabel(role).toLowerCase()} of{' '}
+            <span className="font-medium">{workspace.name}</span>.
+          </p>
+        ) : null}
       </div>
 
       {profile.isError ? (
@@ -37,22 +47,27 @@ export function DashboardPage() {
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
-        {/* Part 6: workspaces, members. Replace with the workspace list and a create action. */}
         <Card>
           <CardHeader>
             <CardTitle>Your workspaces</CardTitle>
             <CardDescription>
-              Create a workspace or switch between the ones you belong to.
+              Switch between the workspaces you belong to or create one.
             </CardDescription>
           </CardHeader>
-          <CardContent className="text-muted-foreground text-sm">Coming soon.</CardContent>
+          <CardContent>
+            <WorkspaceList />
+          </CardContent>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Recent activity</CardTitle>
-            <CardDescription>Audit events from your workspaces.</CardDescription>
+            <CardDescription>
+              {workspace ? `Latest events in ${workspace.name}.` : 'Audit events of the workspace.'}
+            </CardDescription>
           </CardHeader>
-          <CardContent className="text-muted-foreground text-sm">Coming soon.</CardContent>
+          <CardContent>
+            {workspace ? <RecentActivity workspaceId={workspace.id} /> : null}
+          </CardContent>
         </Card>
       </div>
     </div>

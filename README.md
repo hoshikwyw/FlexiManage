@@ -49,6 +49,27 @@ Vitest + Testing Library, Playwright, GitHub Actions.
    npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build
    ```
 
+## Using the app locally
+
+Sign in as a seed user: `alice@example.com` owns Workspace A, `bob@example.com` owns Workspace B
+(password `password123`). The sidebar switcher lists your workspaces and offers "Create
+workspace"; a user without a workspace lands on `/workspaces/new`. Every workspace page lives
+under `/w/<workspaceId>` (dashboard, `members`, `settings`), so links can be shared with
+co-members.
+
+Invite flow: on `/w/<id>/members` an owner or admin invites by email and role; the invitation
+appears under "Pending invitations" with a Revoke button. Email delivery is not wired up yet
+(Phase 4 follow-up), so locally read the token from the database and open the link yourself:
+
+```sh
+docker exec -i supabase_db_fleximanage psql -U postgres -d postgres -Atc \
+  "select token from public.invitations where email='bob@example.com' and accepted_at is null"
+# then, signed in as the invitee (or sign in when prompted):
+#   http://localhost:5173/invite/<token>
+```
+
+Edge Functions must be running for inviting and accepting (`npm run functions:serve`).
+
 ## Project layout
 
 ```
