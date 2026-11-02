@@ -27,6 +27,8 @@ export function AcceptInvitationPage() {
   const accept = useAcceptInvitation(token)
   const { setWorkspaceId } = useCurrentWorkspace()
   const navigate = useNavigate()
+  // Guards StrictMode's double effect; a later visit never replays because the
+  // query is dropped on unmount (`gcTime: 0` in `useAcceptInvitation`).
   const handled = useRef(false)
 
   useEffect(() => {

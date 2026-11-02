@@ -1,26 +1,29 @@
+import { Suspense, lazy, type ComponentType } from 'react'
 import { createBrowserRouter } from 'react-router-dom'
 
 import { AppLayout } from '@/app/layouts/AppLayout'
 import { AuthLayout } from '@/app/layouts/AuthLayout'
-import { DashboardPage } from '@/app/pages/DashboardPage'
-import { NotFoundPage } from '@/app/pages/NotFoundPage'
+import { FullPageSpinner } from '@/components/shared/full-page-spinner'
 import { RouteErrorBoundary } from '@/components/shared/route-error-boundary'
 import { ProtectedRoute } from '@/features/auth/components/ProtectedRoute'
 import { PublicOnlyRoute } from '@/features/auth/components/PublicOnlyRoute'
-import { AuthCallbackPage } from '@/features/auth/pages/AuthCallbackPage'
-import { ForgotPasswordPage } from '@/features/auth/pages/ForgotPasswordPage'
-import { ResetPasswordPage } from '@/features/auth/pages/ResetPasswordPage'
-import { SignInPage } from '@/features/auth/pages/SignInPage'
-import { SignUpPage } from '@/features/auth/pages/SignUpPage'
-import { VerifyEmailPage } from '@/features/auth/pages/VerifyEmailPage'
-import { AcceptInvitationPage } from '@/features/members/pages/AcceptInvitationPage'
-import { MembersPage } from '@/features/members/pages/MembersPage'
-import { ProfileSettingsPage } from '@/features/profile/pages/ProfileSettingsPage'
 import { WorkspaceProvider } from '@/features/workspaces/context/WorkspaceProvider'
-import { CreateWorkspacePage } from '@/features/workspaces/pages/CreateWorkspacePage'
 import { RootRedirect } from '@/features/workspaces/pages/RootRedirect'
 import { WorkspaceRoute } from '@/features/workspaces/pages/WorkspaceRoute'
-import { WorkspaceSettingsPage } from '@/features/workspaces/pages/WorkspaceSettingsPage'
+
+/**
+ * Code-splits a page by its named export and wraps it in a Suspense boundary,
+ * so each page module (and whatever only it imports) becomes its own chunk.
+ * Layouts, guards and the workspace provider stay in the main bundle.
+ */
+function lazyPage<K extends string>(load: () => Promise<{ [P in K]: ComponentType }>, name: K) {
+  const Page = lazy<ComponentType>(async () => ({ default: (await load())[name] }))
+  return (
+    <Suspense fallback={<FullPageSpinner />}>
+      <Page />
+    </Suspense>
+  )
+}
 
 /**
  * Route map
@@ -51,14 +54,44 @@ export const router = createBrowserRouter([
       {
         element: <PublicOnlyRoute />,
         children: [
-          { path: 'sign-in', element: <SignInPage /> },
-          { path: 'sign-up', element: <SignUpPage /> },
-          { path: 'forgot-password', element: <ForgotPasswordPage /> },
-          { path: 'verify-email', element: <VerifyEmailPage /> },
+          {
+            path: 'sign-in',
+            element: lazyPage(() => import('@/features/auth/pages/SignInPage'), 'SignInPage'),
+          },
+          {
+            path: 'sign-up',
+            element: lazyPage(() => import('@/features/auth/pages/SignUpPage'), 'SignUpPage'),
+          },
+          {
+            path: 'forgot-password',
+            element: lazyPage(
+              () => import('@/features/auth/pages/ForgotPasswordPage'),
+              'ForgotPasswordPage',
+            ),
+          },
+          {
+            path: 'verify-email',
+            element: lazyPage(
+              () => import('@/features/auth/pages/VerifyEmailPage'),
+              'VerifyEmailPage',
+            ),
+          },
         ],
       },
-      { path: 'reset-password', element: <ResetPasswordPage /> },
-      { path: 'callback', element: <AuthCallbackPage /> },
+      {
+        path: 'reset-password',
+        element: lazyPage(
+          () => import('@/features/auth/pages/ResetPasswordPage'),
+          'ResetPasswordPage',
+        ),
+      },
+      {
+        path: 'callback',
+        element: lazyPage(
+          () => import('@/features/auth/pages/AuthCallbackPage'),
+          'AuthCallbackPage',
+        ),
+      },
     ],
   },
   {
@@ -73,19 +106,52 @@ export const router = createBrowserRouter([
     errorElement: <RouteErrorBoundary />,
     children: [
       { index: true, element: <RootRedirect /> },
-      { path: 'workspaces/new', element: <CreateWorkspacePage /> },
+      {
+        path: 'workspaces/new',
+        element: lazyPage(
+          () => import('@/features/workspaces/pages/CreateWorkspacePage'),
+          'CreateWorkspacePage',
+        ),
+      },
       {
         path: 'w/:workspaceId',
         element: <WorkspaceRoute />,
         children: [
-          { index: true, element: <DashboardPage /> },
-          { path: 'members', element: <MembersPage /> },
-          { path: 'settings', element: <WorkspaceSettingsPage /> },
+          {
+            index: true,
+            element: lazyPage(() => import('@/app/pages/DashboardPage'), 'DashboardPage'),
+          },
+          {
+            path: 'members',
+            element: lazyPage(() => import('@/features/members/pages/MembersPage'), 'MembersPage'),
+          },
+          {
+            path: 'settings',
+            element: lazyPage(
+              () => import('@/features/workspaces/pages/WorkspaceSettingsPage'),
+              'WorkspaceSettingsPage',
+            ),
+          },
         ],
       },
-      { path: 'invite/:token', element: <AcceptInvitationPage /> },
-      { path: 'settings/profile', element: <ProfileSettingsPage /> },
-      { path: '*', element: <NotFoundPage /> },
+      {
+        path: 'invite/:token',
+        element: lazyPage(
+          () => import('@/features/members/pages/AcceptInvitationPage'),
+          'AcceptInvitationPage',
+        ),
+      },
+      {
+        path: 'settings/profile',
+        element: lazyPage(
+          () => import('@/features/profile/pages/ProfileSettingsPage'),
+          'ProfileSettingsPage',
+        ),
+      },
+      {
+        path: '*',
+        element: lazyPage(() => import('@/app/pages/NotFoundPage'), 'NotFoundPage'),
+      },
     ],
   },
 ])

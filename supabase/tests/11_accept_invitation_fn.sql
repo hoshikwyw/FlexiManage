@@ -8,8 +8,9 @@
 --   * already a member: role kept, invitation consumed, no extra member.added
 -- Fixtures created as postgres inside the transaction:
 --   carol  no membership, confirmed email      erin  no membership, unconfirmed email
---   invitations in A: inv_ok (Carol, admin), inv_expired, inv_used, inv_dave,
---   inv_erin, inv_alice (alice is already owner of A)
+--   invitations in A: inv_ok (Carol, admin), inv_used, inv_dave, inv_erin,
+--   inv_alice (alice is already owner of A); inv_expired (carol) lives in B
+--   because 003 allows one pending invitation per workspace and address
 create extension if not exists pgtap with schema extensions;
 
 begin;
@@ -69,6 +70,10 @@ create function tests.erin() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-00000000000e'::uuid $$;
 create function tests.ws_a() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
+create function tests.ws_b() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-0000000000bb'::uuid $$;
+create function tests.bob() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000000b'::uuid $$;
 create function tests.inv_ok() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-00000000b001'::uuid $$;
 create function tests.inv_expired() returns uuid language sql immutable
@@ -97,7 +102,7 @@ select tests.create_user(tests.erin(),  'erin@example.com',  'Erin Example', fal
 
 insert into public.invitations (id, workspace_id, email, role, invited_by, token, expires_at, accepted_at) values
   (tests.inv_ok(),      tests.ws_a(), 'Carol@Example.com', 'admin',  tests.alice(), 'tok-ok-' || gen_random_uuid()::text,      now() + interval '1 day', null),
-  (tests.inv_expired(), tests.ws_a(), 'carol@example.com', 'member', tests.alice(), 'tok-expired-' || gen_random_uuid()::text, now() - interval '1 minute', null),
+  (tests.inv_expired(), tests.ws_b(), 'carol@example.com', 'member', tests.bob(),   'tok-expired-' || gen_random_uuid()::text, now() - interval '1 minute', null),
   (tests.inv_used(),    tests.ws_a(), 'carol@example.com', 'member', tests.alice(), 'tok-used-' || gen_random_uuid()::text,    now() + interval '1 day', now() - interval '1 hour'),
   (tests.inv_dave(),    tests.ws_a(), 'dave@example.com',  'member', tests.alice(), 'tok-dave-' || gen_random_uuid()::text,    now() + interval '1 day', null),
   (tests.inv_erin(),    tests.ws_a(), 'erin@example.com',  'member', tests.alice(), 'tok-erin-' || gen_random_uuid()::text,    now() + interval '1 day', null),
@@ -195,9 +200,9 @@ select results_eq(
   format($sql$select actor_id, entity_type, entity_id, metadata from public.audit_events
           where workspace_id = %L and action = 'invitation.accepted'$sql$, tests.ws_a()),
   format($sql$values (%L::uuid, 'invitation', %L::text,
-          '{"role": "admin", "email": "Carol@Example.com", "already_member": false}'::jsonb)$sql$,
-         tests.carol(), tests.inv_ok()),
-  'postgres: one invitation.accepted event with carol as actor and email/role metadata');
+          jsonb_build_object('role', 'admin', 'invitation_id', %L::uuid, 'already_member', false))$sql$,
+         tests.carol(), tests.inv_ok(), tests.inv_ok()),
+  'postgres: one invitation.accepted event with carol as actor and invitation_id/role metadata (no email)');
 
 select results_eq(
   format($sql$select actor_id, metadata from public.audit_events

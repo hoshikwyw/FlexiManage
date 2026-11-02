@@ -1,10 +1,12 @@
 import { AuthError, isAuthError } from '@supabase/supabase-js'
 
+import { NETWORK_ERROR_MESSAGE } from '@/lib/postgrest-errors'
+
 /**
  * Maps Supabase Auth errors to messages a user can act on.
  * Keep this the only place that knows GoTrue error codes and message strings.
  */
-const MESSAGES_BY_CODE: Record<string, string> = {
+const MESSAGES = {
   invalid_credentials: 'Incorrect email or password.',
   email_not_confirmed:
     'Confirm your email address before signing in. Check your inbox for the confirmation link.',
@@ -30,32 +32,29 @@ const MESSAGES_BY_CODE: Record<string, string> = {
     'Too many emails were sent recently. Wait a few minutes and try again.',
   over_request_rate_limit: 'Too many attempts. Wait a few minutes and try again.',
   reauthentication_needed: 'Sign in again to change your password.',
-}
+} as const satisfies Record<string, string>
+
+/** Lookup by an arbitrary GoTrue code; unknown codes yield `undefined`. */
+const MESSAGES_BY_CODE: Record<string, string | undefined> = MESSAGES
 
 /** Older GoTrue versions return only a message; match the common ones. */
 const MESSAGE_PATTERNS: Array<[RegExp, string]> = [
-  [/invalid login credentials/i, MESSAGES_BY_CODE.invalid_credentials!],
-  [/email not confirmed/i, MESSAGES_BY_CODE.email_not_confirmed!],
-  [/already (been )?registered/i, MESSAGES_BY_CODE.user_already_exists!],
-  [
-    /password should be at least|weak password|password is too weak/i,
-    MESSAGES_BY_CODE.weak_password!,
-  ],
-  [/different from the old password/i, MESSAGES_BY_CODE.same_password!],
-  [/code verifier/i, MESSAGES_BY_CODE.bad_code_verifier!],
-  [/invalid or has expired/i, MESSAGES_BY_CODE.otp_expired!],
-  [/rate limit/i, MESSAGES_BY_CODE.over_request_rate_limit!],
+  [/invalid login credentials/i, MESSAGES.invalid_credentials],
+  [/email not confirmed/i, MESSAGES.email_not_confirmed],
+  [/already (been )?registered/i, MESSAGES.user_already_exists],
+  [/password should be at least|weak password|password is too weak/i, MESSAGES.weak_password],
+  [/different from the old password/i, MESSAGES.same_password],
+  [/code verifier/i, MESSAGES.bad_code_verifier],
+  [/invalid or has expired/i, MESSAGES.otp_expired],
+  [/rate limit/i, MESSAGES.over_request_rate_limit],
 ]
 
-export const NETWORK_ERROR_MESSAGE =
-  'Could not reach the server. Check your connection and try again.'
 export const GENERIC_AUTH_ERROR_MESSAGE = 'Something went wrong. Please try again.'
 
 export function getAuthErrorMessage(error: unknown): string {
   if (isAuthError(error)) {
-    if (error.code && MESSAGES_BY_CODE[error.code]) {
-      return MESSAGES_BY_CODE[error.code]!
-    }
+    const known = error.code ? MESSAGES_BY_CODE[error.code] : undefined
+    if (known) return known
     // Retryable fetch errors (status 0) mean the network or the server is down.
     if (error.status === 0 || error.name === 'AuthRetryableFetchError') {
       return NETWORK_ERROR_MESSAGE

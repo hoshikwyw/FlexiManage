@@ -1,6 +1,6 @@
 ---
 name: test-engineer
-description: Use to write or fix tests: Vitest unit tests, Testing Library component tests, Playwright end-to-end journeys, and SQL/pgTAP tests for RLS. Especially the cross-workspace denial tests required before any milestone is accepted.
+description: "Use to write or fix tests: Vitest unit tests, Testing Library component tests, Playwright end-to-end journeys, and SQL/pgTAP tests for RLS. Especially the cross-workspace denial tests required before any milestone is accepted."
 tools: Read, Glob, Grep, Write, Edit, Bash
 model: inherit
 ---

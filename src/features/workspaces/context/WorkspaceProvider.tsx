@@ -28,6 +28,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const userId = user?.id
   const query = useWorkspaces(userId)
   const workspaces = query.data ?? EMPTY
+  // `refetch` is bound once per observer, so depending on it (not on the whole
+  // result object, which is new on every render) keeps the context value stable.
+  const { refetch: refetchWorkspaces, isPending, isError, error } = query
 
   // In-session choice; ignored once a different user signs in, so the stored
   // value of the new user wins without an effect.
@@ -62,8 +65,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   )
 
   const refetch = useCallback(() => {
-    void query.refetch()
-  }, [query])
+    void refetchWorkspaces()
+  }, [refetchWorkspaces])
 
   const value = useMemo<CurrentWorkspaceValue>(
     () => ({
@@ -72,12 +75,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       role: current?.role ?? null,
       workspaceId: current?.workspace.id ?? null,
       setWorkspaceId,
-      isLoading: query.isPending,
-      isError: query.isError,
-      error: query.error,
+      isLoading: isPending,
+      isError,
+      error,
       refetch,
     }),
-    [current, query.error, query.isError, query.isPending, refetch, setWorkspaceId, workspaces],
+    [current, error, isError, isPending, refetch, setWorkspaceId, workspaces],
   )
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>

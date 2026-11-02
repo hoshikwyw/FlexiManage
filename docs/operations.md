@@ -1,7 +1,29 @@
 # Operations
 
-Runtime and tooling notes for operators. Updated by the `devops-engineer` agent.
-Last updated: 2026-10-30 (Part 4: Edge Functions served locally).
+Runtime and tooling notes for operators. Updated by the `devops-engineer` and `supabase-engineer`
+agents. Last updated: 2026-11-02 (Production prerequisites, migration 003).
+
+## Production prerequisites
+
+Mandatory GoTrue settings for the staging and production Supabase projects, under
+Authentication -> Providers -> Email (the hosted equivalents of `[auth.email]` in
+`supabase/config.toml`):
+
+| Setting                          | Required value | Why                                                                                                                                          |
+| -------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enable_confirmations`           | `true`         | `accept_invitation()` only admits a caller whose `auth.users.email_confirmed_at` is set. Without confirmation anyone could sign up with an invitee's address and join their workspace. |
+| `double_confirm_changes`         | `true`         | An email change must be confirmed from both addresses before `auth.users.email` (and, through the `on_auth_user_email_changed` trigger, `profiles.email`) changes; otherwise a signed-in user could switch to an invitee's address and accept their invitation. |
+
+Local development deliberately sets `enable_confirmations = false` (`supabase/config.toml`) so
+sign-up signs in immediately and Mailpit captures the mail; this is why the seed users carry
+`email_confirmed_at`. The Phase 5 checklist in `docs/PLANNING.md` includes verifying both values
+on staging and production before the first pilot; the `security-reviewer` treats a project with
+either value off as a Critical finding.
+
+Account deletion (migration 003, `docs/architecture.md`, "Account deletion") runs entirely in
+Postgres triggers on `auth.users`, so deleting a user from the dashboard or the admin API is safe:
+solely-owned workspaces are handed to the longest-standing admin or member, or deleted when the
+user was alone.
 
 ## Environments
 
@@ -28,8 +50,17 @@ secrets (Edge Functions).
   are added with `npx shadcn@latest add <name>` and live in `src/components/ui`.
 - Playwright browsers are not installed by `npm ci`. Run
   `npx playwright install --with-deps chromium` locally or in the e2e CI job.
-- Prettier enforces LF line endings. On Windows, set `git config core.autocrlf false` for this
-  repository so `npm run format:check` matches CI.
+- Line endings: `.gitattributes` enforces LF for every text file (`* text=auto eol=lf`) and marks
+  images and fonts binary. No `core.autocrlf` setting is required; a checkout on Windows is LF and
+  `npm run format:check` matches CI.
+- `npm run typecheck` runs `tsc -b` over the three projects referenced by `tsconfig.json`:
+  `tsconfig.app.json` (src, including co-located `*.test.tsx`), `tsconfig.node.json`
+  (Vite/Vitest/Playwright configs) and `tsconfig.test.json` (`tests/`).
+- `shadcn` is a devDependency (CLI only); it is never bundled.
+- `npm run test:e2e` builds with `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` from the
+  environment or `.env*` files; without them `playwright.config.ts` injects placeholders so the
+  unauthenticated smoke spec runs on a clean clone. Authenticated e2e needs `.env.local` pointing
+  at the local stack.
 
 ## Local Supabase
 
@@ -58,7 +89,7 @@ migrations and seed (`npm run db:reset` after any schema or seed change). The CL
 `pgtap` extension in the `extensions` schema if it is missing and runs `pg_prove` over
 `supabase/tests` in file-name order. Conventions:
 
-- Files are numbered (`01_rls_enabled.sql` ... `11_accept_invitation_fn.sql`) and each wraps everything in
+- Files are numbered (`01_rls_enabled.sql` ... `12_review_fixes.sql`) and each wraps everything in
   `begin; select plan(N); ... select * from finish(); rollback;`, so a run leaves no data behind.
 - Users are impersonated the way PostgREST does: `set local role authenticated` plus
   `set_config('request.jwt.claims', '{"sub": "<uuid>", "role": "authenticated"}', true)`. Each file
@@ -108,8 +139,9 @@ curl -s -X POST http://127.0.0.1:54321/functions/v1/invite-member \
   -d '{"workspaceId":"00000000-0000-0000-0000-0000000000aa","email":"bob@example.com","role":"member"}'
 ```
 
-The invitation token is never returned by the API and no email is sent yet (Phase 4 follow-up);
-for local testing read it from the database
+The invitation token is never returned by the API, is not selectable with a user JWT (column
+grant, migration 003) and no email is sent yet (Phase 4 follow-up); for local testing read it
+from the database as `postgres`
 (`select token from public.invitations where email = 'bob@example.com' and accepted_at is null`)
 and open `http://localhost:5173/invite/<token>` as the invitee. The dev server and
 `npm run functions:serve` must both be running for the invite and accept flows.
@@ -141,7 +173,15 @@ is enabled and concurrency cancels superseded runs on the same ref.
   `supabase start` (Docker is available on `ubuntu-latest`; a fresh start applies the migrations
   and `seed.sql`), then `supabase test db`, then regenerates the TypeScript types with
   `supabase gen types typescript --local` and fails on any diff against `src/types/supabase.ts`
-  ("types drift"). Fix drift locally with `npm run db:types` and commit the result.
+  ("types drift"). Fix drift locally with `npm run db:types` and commit the result. The job also
+  type-checks the Edge Functions with Deno 2 (`denoland/setup-deno@v2`,
+  `deno check --config supabase/functions/deno.json supabase/functions/*/index.ts`) and runs
+  `scripts/ci/functions-smoke.sh`, which reads the API URL and anon key from
+  `supabase status -o env` (never printed), signs in as `alice@example.com` with the password
+  grant and asserts status codes only: no credentials 401, invite into a foreign workspace 403,
+  unknown invitation token 404. If the edge runtime is not answering it starts
+  `supabase functions serve` itself and stops it afterwards. Run it locally with
+  `bash scripts/ci/functions-smoke.sh` (needs curl, and jq or node).
 
 Planned: an `e2e` job on pull requests to `main` with Playwright browsers cached.
 

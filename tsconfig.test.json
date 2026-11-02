@@ -1,0 +1,12 @@
+{
+  // Typechecks the standalone test code in tests/** (unit, e2e, fixtures, setup) with the same
+  // strictness as the app. Co-located src/**/*.test.tsx and src/test/** are covered by
+  // tsconfig.app.json; src/test/vitest-env.d.ts is included here so the vitest globals and
+  // jest-dom matchers resolve for tests/** too.
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["vite/client", "node"]
+  },
+  "include": ["tests", "src/test/vitest-env.d.ts"]
+}

@@ -2,8 +2,10 @@
 --   * auth.users insert creates the profile
 --   * workspace insert makes the creator owner and writes workspace.created
 --     and member.added
---   * invitation insert/delete writes invitation.created/revoked without the token
---   * role change writes member.role_changed, removal writes member.removed
+--   * invitation insert/delete writes invitation.created/revoked with
+--     invitation_id and role, never the token or the invitee email (003)
+--   * direct member inserts are denied (003); role change writes
+--     member.role_changed, removal writes member.removed
 --   * updated_at is stamped on update
 create extension if not exists pgtap with schema extensions;
 
@@ -63,8 +65,10 @@ create function tests.ws_a() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
 create function tests.ws_c() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-0000000000cc'::uuid $$;
-create function tests.inv_c() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000c001'::uuid $$;
+-- authenticated may not supply invitations.id (003), so the generated id is
+-- captured into a transaction-local setting right after the insert.
+create function tests.inv_c() returns uuid language sql stable
+  as $$ select nullif(current_setting('tests.inv_c', true), '')::uuid $$;
 
 -- ---------------------------------------------------------------------------
 -- auth.users insert creates the profile (as postgres)
@@ -108,15 +112,20 @@ select is((select count(*)::int from public.audit_events where workspace_id = te
 -- ---------------------------------------------------------------------------
 -- Invitations
 -- ---------------------------------------------------------------------------
-select is(tests.rows_affected(format($sql$insert into public.invitations (id, workspace_id, email, role, invited_by) values (%L, %L, 'invitee@example.com', 'member', %L)$sql$,
-                                     tests.inv_c(), tests.ws_c(), tests.alice())),
+select is(tests.rows_affected(format($sql$insert into public.invitations (workspace_id, email, role, invited_by) values (%L, 'invitee@example.com', 'member', %L)$sql$,
+                                     tests.ws_c(), tests.alice())),
   1, 'alice: creates an invitation');
+select set_config('tests.inv_c',
+  (select i.id::text from public.invitations i where i.workspace_id = tests.ws_c() and i.email = 'invitee@example.com'),
+  true);
 select results_eq(
   format($sql$select actor_id, entity_type, entity_id, metadata from public.audit_events
              where workspace_id = %L and action = 'invitation.created'$sql$, tests.ws_c()),
-  format($sql$values (%L::uuid, 'invitation', %L::text, '{"role": "member", "email": "invitee@example.com"}'::jsonb)$sql$,
-         tests.alice(), tests.inv_c()),
-  'invitation.created carries only email and role in metadata');
+  format($sql$values (%L::uuid, 'invitation', %L::text, jsonb_build_object('role', 'member', 'invitation_id', %L::uuid))$sql$,
+         tests.alice(), tests.inv_c(), tests.inv_c()),
+  'invitation.created carries only invitation_id and role in metadata (no email)');
+-- The token column is hidden from authenticated (003), so compare as postgres.
+select tests.logout();
 select ok(
   not exists (
     select 1 from public.audit_events ae
@@ -126,27 +135,35 @@ select ok(
       and (ae.metadata ? 'token' or ae.metadata::text like '%' || i.token || '%')
   ),
   'the invitation token never appears in the audit log');
+select tests.login_as(tests.alice());
 
 select is(tests.rows_affected(format($sql$delete from public.invitations where id = %L$sql$, tests.inv_c())),
   1, 'alice: revokes the invitation');
 select results_eq(
   format($sql$select actor_id, entity_id, metadata from public.audit_events
              where workspace_id = %L and action = 'invitation.revoked'$sql$, tests.ws_c()),
-  format($sql$values (%L::uuid, %L::text, '{"role": "member", "email": "invitee@example.com", "accepted": false}'::jsonb)$sql$,
-         tests.alice(), tests.inv_c()),
-  'invitation.revoked is written with accepted = false');
+  format($sql$values (%L::uuid, %L::text, jsonb_build_object('role', 'member', 'accepted', false, 'invitation_id', %L::uuid))$sql$,
+         tests.alice(), tests.inv_c(), tests.inv_c()),
+  'invitation.revoked is written with accepted = false and no email');
 
 -- ---------------------------------------------------------------------------
 -- Membership changes
 -- ---------------------------------------------------------------------------
-select is(tests.rows_affected(format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'member')$sql$,
-                                     tests.ws_c(), tests.carol())),
-  1, 'alice: adds carol as member');
+select throws_ok(
+  format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'member')$sql$,
+         tests.ws_c(), tests.carol()),
+  '42501', 'permission denied for table workspace_members',
+  'alice: cannot add carol directly (membership comes from accept_invitation, see 11)');
+
+-- carol joins through the security definer path (no JWT: actor_id is null).
+select tests.logout();
+insert into public.workspace_members (workspace_id, user_id, role) values (tests.ws_c(), tests.carol(), 'member');
+select tests.login_as(tests.alice());
 select results_eq(
   format($sql$select actor_id, metadata from public.audit_events
              where workspace_id = %L and action = 'member.added' and entity_id = %L$sql$, tests.ws_c(), tests.carol()::text),
-  format($sql$values (%L::uuid, '{"role": "member"}'::jsonb)$sql$, tests.alice()),
-  'member.added is written for carol with alice as actor');
+  $sql$values (null::uuid, '{"role": "member"}'::jsonb)$sql$,
+  'member.added is written for carol; actor_id is null when there is no JWT');
 
 select is(tests.rows_affected(format($sql$update public.workspace_members set role = 'admin' where workspace_id = %L and user_id = %L$sql$,
                                      tests.ws_c(), tests.carol())),

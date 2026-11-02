@@ -23,17 +23,15 @@ function event(overrides: Partial<AuditEventWithActor>): AuditEventWithActor {
 describe('describeAuditAction', () => {
   it.each([
     ['workspace.created', { name: 'Pilot Co' }, 'created the workspace "Pilot Co"'],
+    ['invitation.created', { invitation_id: 'inv-1', role: 'member' }, 'invited a member (member)'],
+    ['invitation.created', { invitation_id: 'inv-1' }, 'invited a member'],
+    ['invitation.revoked', { invitation_id: 'inv-1', role: 'admin' }, 'revoked an invitation'],
     [
-      'invitation.created',
-      { email: 'bob@example.com', role: 'member' },
-      'invited bob@example.com as member',
+      'invitation.accepted',
+      { invitation_id: 'inv-1', role: 'admin' },
+      'joined via invitation (admin)',
     ],
-    [
-      'invitation.revoked',
-      { email: 'bob@example.com' },
-      'revoked the invitation for bob@example.com',
-    ],
-    ['invitation.accepted', { role: 'admin' }, 'accepted an invitation as admin'],
+    ['invitation.accepted', {}, 'joined via invitation'],
     [
       'member.role_changed',
       { from: 'member', to: 'admin' },
@@ -62,6 +60,15 @@ describe('describeAuditAction', () => {
         event({ action: 'member.removed', entity_id: 'user-b', metadata: { role: 'admin' } }),
       ),
     ).toBe('removed a member (admin)')
+  })
+
+  it('never renders an email address from invitation metadata', () => {
+    for (const action of ['invitation.created', 'invitation.revoked', 'invitation.accepted']) {
+      const label = describeAuditAction(
+        event({ action, metadata: { email: 'bob@example.com', role: 'member' } }),
+      )
+      expect(label).not.toContain('bob@example.com')
+    }
   })
 
   it('falls back to the raw action for unknown events', () => {

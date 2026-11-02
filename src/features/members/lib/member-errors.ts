@@ -80,15 +80,28 @@ export async function parseFunctionError(error: unknown): Promise<MemberActionEr
   return new MemberActionError('internal', error instanceof Error ? error.message : undefined)
 }
 
-/** Maps a Postgres error from a direct members/invitations write to a `MemberActionError`. */
-export function memberErrorFromPostgrest(error: unknown): MemberActionError {
+/**
+ * What the failed statement was doing. Decides how `PGRST116` (zero rows for
+ * `.single()`) is read: on a `write` RLS filtered the target row away, which is
+ * a permission problem (`forbidden`); on a `read` by id the row is simply gone
+ * or invisible (`not_found`).
+ */
+export type MemberOperation = 'read' | 'write'
+
+/** Maps a Postgres error from a direct members/invitations statement to a `MemberActionError`. */
+export function memberErrorFromPostgrest(
+  error: unknown,
+  operation: MemberOperation = 'read',
+): MemberActionError {
   if (error instanceof MemberActionError) return error
   if (isPostgrestError(error)) {
     if (error.code === 'P0001' && /last owner/i.test(error.message)) {
       return new MemberActionError('last_owner', error.message)
     }
     if (error.code === '42501') return new MemberActionError('forbidden', error.message)
-    if (error.code === 'PGRST116') return new MemberActionError('not_found', error.message)
+    if (error.code === 'PGRST116') {
+      return new MemberActionError(operation === 'write' ? 'forbidden' : 'not_found', error.message)
+    }
     if (error.code === '23505') return new MemberActionError('conflict', error.message)
     return new MemberActionError('internal', error.message)
   }

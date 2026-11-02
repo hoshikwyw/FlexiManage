@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQuery } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 
@@ -25,7 +25,6 @@ export async function fetchWorkspaces(userId: string): Promise<WorkspaceMembersh
 export function useWorkspaces(userId: string | undefined) {
   return useQuery({
     queryKey: workspaceKeys.list(userId ?? ''),
-    queryFn: () => fetchWorkspaces(userId!),
-    enabled: userId !== undefined,
+    queryFn: userId ? () => fetchWorkspaces(userId) : skipToken,
   })
 }

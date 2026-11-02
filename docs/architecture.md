@@ -2,8 +2,9 @@
 
 Database and backend reference. Maintained by the `supabase-engineer` agent; every new table,
 function or policy is documented here in the same change that introduces it.
-Last updated: 2026-10-30 (migration 002, the Part 4 Edge Functions and the Part 5 frontend
-section).
+Last updated: 2026-11-02 (migration 003, the Phase 2 review fixes; see
+[Review fixes](#review-fixes-migration-20261102090000_003_review_fixessql) and
+[Account deletion](#account-deletion)).
 
 ## Tenancy model
 
@@ -20,25 +21,29 @@ section).
   inside functions for lookups RLS would block; it never reaches the browser.
 - Every privileged write produces a `public.audit_events` row. Membership and invitation changes
   are written by triggers (migration 001); `accept_invitation()` writes `invitation.accepted`
-  (migration 002); future functions use `writeAudit` from the shared toolkit.
+  (migration 002); future functions use `writeAudit` from the shared toolkit. Invitation events
+  never carry the invitee's email or the token (migration 003).
+- Joining a workspace has exactly two paths: creating it (the creator becomes owner through
+  the `on_workspace_created` trigger) and accepting an invitation (`accept_invitation()`).
+  Nobody, not even an owner, inserts into `workspace_members` directly (migration 003).
 
-Role capabilities in migration 001:
+Role capabilities (migrations 001 and 003):
 
 | Capability                                   | owner | admin | member |
 | -------------------------------------------- | :---: | :---: | :----: |
 | Read workspace, members, audit log           |  yes  |  yes  |  yes   |
 | Rename workspace / change slug               |  yes  |  yes  |   no   |
 | Delete workspace                             |  yes  |  no   |   no   |
-| Add member as `member` or `admin`            |  yes  |  yes  |   no   |
-| Add member as `owner`                        |  yes  |  no   |   no   |
+| Add a member directly (any role)             |  no   |  no   |   no   |
 | Change a member's role                       |  yes  |  no   |   no   |
 | Remove a non-owner member                    |  yes  |  yes  |   no   |
 | Remove an owner (never the last one)         |  yes  |  no   |   no   |
 | Leave the workspace (never as the last owner) |  yes  |  yes  |  yes   |
 | Create, list, revoke invitations             |  yes  |  yes  |   no   |
 | Invite as `owner`                            |  yes  |  no   |   no   |
+| Join a workspace (accept an invitation)      | invitee only: `accept_invitation()` | | |
 
-## Tables (migration `20261030120000_001_tenancy.sql`)
+## Tables (migration `20261030120000_001_tenancy.sql`, amended by 003)
 
 All tables live in `public`, have RLS enabled, grant nothing to `anon`, and grant `authenticated`
 only the commands that have a policy. `service_role` keeps its default full access for Edge
@@ -47,18 +52,21 @@ Functions and CI.
 ### `profiles`
 
 Public mirror of `auth.users`, one row per user. Created by the `on_auth_user_created` trigger on
-`auth.users`; clients never insert or delete it.
+`auth.users`; clients never insert or delete it. `email` follows `auth.users.email` through the
+`on_auth_user_email_changed` trigger (migration 003), so a confirmed email change is visible to
+co-members without a re-login.
 
-| Column       | Type        | Notes                                             |
-| ------------ | ----------- | ------------------------------------------------- |
-| `id`         | uuid PK     | `references auth.users(id) on delete cascade`     |
-| `email`      | text        | not null, copied from `auth.users.email`          |
-| `full_name`  | text        | from `raw_user_meta_data.full_name` at signup     |
-| `avatar_url` | text        |                                                   |
-| `created_at` | timestamptz | default `now()`                                   |
-| `updated_at` | timestamptz | default `now()`, maintained by `set_updated_at()` |
+| Column       | Type        | Notes                                                                      |
+| ------------ | ----------- | -------------------------------------------------------------------------- |
+| `id`         | uuid PK     | `references auth.users(id) on delete cascade`                              |
+| `email`      | text        | not null, copied from `auth.users.email` at signup and on every email change |
+| `full_name`  | text        | from `raw_user_meta_data.full_name` at signup (truncated to 100); `profiles_full_name_length_check` `char_length <= 100` |
+| `avatar_url` | text        | `profiles_avatar_url_check`: null, or `https://...` and `char_length <= 2048`; a non-conforming signup value is dropped |
+| `created_at` | timestamptz | default `now()`                                                            |
+| `updated_at` | timestamptz | default `now()`, maintained by `set_updated_at()`                          |
 
-Column grant: `authenticated` may update only `full_name` and `avatar_url`.
+Column grant: `authenticated` may update only `full_name` and `avatar_url`. A check violation
+surfaces as SQLSTATE `23514` with the constraint name.
 
 ### `workspaces`
 
@@ -81,14 +89,16 @@ once plan limits must be checked first. Column grant: `authenticated` may update
 
 ### `workspace_members`
 
-Membership and role. The single source of truth for all RLS decisions.
+Membership and role. The single source of truth for all RLS decisions. Rows are created only by
+`handle_new_workspace()` (creator becomes owner) and `accept_invitation()`; `authenticated` has
+no insert grant and no insert policy since migration 003.
 
 | Column         | Type             | Notes                                            |
 | -------------- | ---------------- | ------------------------------------------------ |
 | `workspace_id` | uuid             | PK part, `references workspaces on delete cascade` |
 | `user_id`      | uuid             | PK part, `references auth.users on delete cascade` |
 | `role`         | `workspace_role` | not null, default `member`                       |
-| `created_at`   | timestamptz      |                                                  |
+| `created_at`   | timestamptz      | "joined at"; orders succession on account deletion |
 | `updated_at`   | timestamptz      | maintained by `set_updated_at()`                 |
 
 Indexes: PK `(workspace_id, user_id)`, `workspace_members_user_id_idx (user_id)`.
@@ -96,11 +106,17 @@ Indexes: PK `(workspace_id, user_id)`, `workspace_members_user_id_idx (user_id)`
 Triggers:
 
 - `workspace_members_protect_last_owner` (before update or delete): raises `P0001` when the change
-  would leave the workspace with zero owners. It lets the cascade from a workspace delete through.
+  would leave the workspace with zero owners. Before counting it takes
+  `pg_advisory_xact_lock(hashtext('workspace_members:' || workspace_id))`, so two transactions
+  each removing one of two owners serialise and the second one fails (migration 003). It lets
+  two cascades through: a workspace delete (the workspace row is already gone) and an
+  `auth.users` delete (the user row is already gone; see [Account deletion](#account-deletion)).
 - `workspace_members_audit` (after insert, update, delete): writes `member.added`,
-  `member.role_changed` (only when `role` changed) and `member.removed`.
+  `member.role_changed` (only when `role` changed) and `member.removed`. `actor_id` is
+  `auth.uid()`, which is null when the write comes from GoTrue, the service role or a
+  system trigger.
 
-Column grant: `authenticated` may update only `role`.
+Column grant: `authenticated` may update only `role`; select and delete at table level.
 
 ### `invitations`
 
@@ -110,26 +126,35 @@ the `accept-invitation` Edge Function; clients cannot update this table.
 
 Lifecycle: `created` (insert by owner/admin, directly or via `invite-member`) -> `accepted`
 (`accepted_at` set by `accept_invitation()`, token consumed) | `revoked` (row deleted by
-owner/admin under RLS) | `expired` (`expires_at <= now()`, row kept; accepting fails with 410). A
-pending, unexpired invitation for the same email is reused by `invite-member` instead of creating
-a duplicate; to change the role, revoke and invite again.
+owner/admin under RLS) | `expired` (`expires_at <= now()`, row kept; accepting fails with 410).
+At most one pending row per workspace and address exists (`invitations_pending_unique`,
+migration 003): `invite-member` returns the existing unexpired one, deletes an expired one before
+re-inviting, and a direct duplicate insert fails with `23505`. To change the role, revoke and
+invite again.
 
 | Column         | Type             | Notes                                                        |
 | -------------- | ---------------- | ------------------------------------------------------------ |
-| `id`           | uuid PK          | default `gen_random_uuid()`                                  |
+| `id`           | uuid PK          | default `gen_random_uuid()`; not insertable by clients       |
 | `workspace_id` | uuid             | not null, `references workspaces on delete cascade`          |
-| `email`        | text             | not null, 3..320 chars                                       |
+| `email`        | text             | not null, 3..320 chars, `invitations_email_format_check` (`~* '^[^@\s]+@[^@\s]+\.[^@\s]+$'`) |
 | `role`         | `workspace_role` | not null, default `member`                                   |
-| `token`        | text             | not null, unique, default 64 hex chars from `gen_random_bytes(32)` |
+| `token`        | text             | not null, unique, default 64 hex chars from `gen_random_bytes(32)`; **not readable or writable by `authenticated`** |
 | `invited_by`   | uuid             | `references auth.users on delete set null`                   |
-| `expires_at`   | timestamptz      | not null, default `now() + 7 days`                           |
-| `accepted_at`  | timestamptz      | null until accepted                                          |
+| `expires_at`   | timestamptz      | not null, default `now() + 7 days`; not insertable by clients |
+| `accepted_at`  | timestamptz      | null until accepted; not insertable by clients               |
 | `created_at`   | timestamptz      |                                                              |
 
-Indexes: `invitations_workspace_id_idx (workspace_id)`, `invitations_email_lower_idx (lower(email))`.
+Indexes: `invitations_workspace_id_idx (workspace_id)`, `invitations_email_lower_idx (lower(email))`,
+`invitations_pending_unique (workspace_id, lower(email)) where accepted_at is null` (unique).
+
+Grants for `authenticated` (migration 003) are column-level: select on every column except
+`token`; insert on `workspace_id, email, role, invited_by` only; delete at table level; no
+update. A `select *` or `select token` through PostgREST is therefore a `42501` (HTTP 403), not
+an empty result; clients list the eight visible columns explicitly.
 
 Trigger `invitations_audit` (after insert, delete): writes `invitation.created` and
-`invitation.revoked`. The token is never written to the audit log.
+`invitation.revoked` with metadata `{ invitation_id, role }` (plus `accepted` on revoke). Neither
+the token nor the invitee's email is written to the audit log.
 
 ### `audit_events`
 
@@ -148,11 +173,24 @@ Append-only log of privileged actions. Clients can read their workspaces' events
 
 Index: `audit_events_workspace_created_idx (workspace_id, created_at desc)`.
 
-Actions written in migration 001: `workspace.created`, `member.added`, `member.role_changed`,
-`member.removed`, `invitation.created`, `invitation.revoked`. Migration 002 adds
-`invitation.accepted` (metadata `{ email, role, already_member }`, never the token). Accepting an
-invitation therefore produces two rows: `member.added` from the membership trigger and
-`invitation.accepted` from the function, both with the invitee as `actor_id`.
+Actions and metadata (migrations 001 to 003):
+
+| Action                | Written by                                   | `entity_type` / `entity_id`       | `metadata`                                  |
+| --------------------- | -------------------------------------------- | --------------------------------- | ------------------------------------------- |
+| `workspace.created`   | `handle_new_workspace()`                     | `workspace` / workspace id        | `{ name, slug }`                            |
+| `member.added`        | `audit_workspace_member_change()`            | `workspace_member` / user id      | `{ role }`                                  |
+| `member.role_changed` | `audit_workspace_member_change()`            | `workspace_member` / user id      | `{ from, to }`                              |
+| `member.removed`      | `audit_workspace_member_change()`            | `workspace_member` / user id      | `{ role }`                                  |
+| `invitation.created`  | `audit_invitation_change()`                  | `invitation` / invitation id      | `{ invitation_id, role }`                   |
+| `invitation.revoked`  | `audit_invitation_change()`                  | `invitation` / invitation id      | `{ invitation_id, role, accepted }`         |
+| `invitation.accepted` | `accept_invitation()`                        | `invitation` / invitation id      | `{ invitation_id, role, already_member }`   |
+
+Invitation metadata never contains the invitee's email (privacy: the audit log is readable by
+every member) nor the token. Accepting an invitation produces two rows: `member.added` from the
+membership trigger and `invitation.accepted` from the function, both with the invitee as
+`actor_id`. `actor_id` is null for rows written without a JWT (seed, GoTrue-triggered account
+deletion, service role). There is no `workspace.deleted` row: audit rows cascade with the
+workspace (same for an owner-initiated delete); a tenant-independent log is a Phase 5 topic.
 
 ## Functions
 
@@ -181,7 +219,8 @@ role)`. In a single transaction it:
 4. Compares `lower(invitations.email)` with the caller's `auth.users.email` (not the JWT claim,
    which can be stale after an email change) and requires `email_confirmed_at`: otherwise `PT403`.
 5. Inserts the membership with the invited role unless the caller is already a member (then the
-   existing role is kept), stamps `accepted_at = now()` and writes `invitation.accepted`.
+   existing role is kept), stamps `accepted_at = now()` and writes `invitation.accepted` with
+   `{ invitation_id, role, already_member }` (migration 003 removed `email`).
 
 The `PTxxx` SQLSTATEs make PostgREST return that HTTP status when the function is called through
 the REST API directly; the Edge Function maps them to stable error codes (table below).
@@ -191,11 +230,40 @@ Trigger functions (not executable by any API role):
 | Function                         | Fires on                                  | Purpose                                              |
 | -------------------------------- | ----------------------------------------- | ---------------------------------------------------- |
 | `set_updated_at()`               | before update, all tables with `updated_at` | Stamps `updated_at = now()`.                       |
-| `handle_new_user()`              | after insert on `auth.users`              | Creates the `profiles` row. Security definer.        |
+| `handle_new_user()`              | after insert on `auth.users` (`on_auth_user_created`) | Creates the `profiles` row; `full_name` truncated to 100, `avatar_url` kept only when https and <= 2048. Security definer. |
+| `handle_user_email_changed()`    | after update of `email` on `auth.users` (`on_auth_user_email_changed`, migration 003) | Mirrors the new address into `profiles.email`. Security definer. |
+| `handle_user_deleted()`          | before delete on `auth.users` (`on_auth_user_deleted`, migration 003) | Owner succession or workspace deletion for the user's solely-owned workspaces. Security definer. |
 | `handle_new_workspace()`         | after insert on `workspaces`              | Owner membership + `workspace.created`. Security definer. |
-| `protect_last_owner()`           | before update/delete on `workspace_members` | Rejects removing or demoting the last owner.       |
+| `protect_last_owner()`           | before update/delete on `workspace_members` | Rejects removing or demoting the last owner; per-workspace advisory lock. Security definer. |
 | `audit_workspace_member_change()`| after insert/update/delete on `workspace_members` | Membership audit events.                     |
-| `audit_invitation_change()`      | after insert/delete on `invitations`      | Invitation audit events.                             |
+| `audit_invitation_change()`      | after insert/delete on `invitations`      | Invitation audit events (`invitation_id`, `role`; no email). |
+
+### Account deletion
+
+Deleting a user (GoTrue admin API, dashboard, or a future self-service Edge Function) is a
+`delete from auth.users`. Migration 003 makes it safe for the workspaces the user owned:
+
+1. `on_auth_user_deleted` (before delete, row-level) runs while the memberships still exist. For
+   every workspace in which the user is an owner it takes the same advisory lock as
+   `protect_last_owner()` and then:
+   - if another owner exists, does nothing (the cascade removes the membership below);
+   - else promotes a successor to `owner`: the earliest-joined `admin` (by
+     `workspace_members.created_at`), else the earliest-joined `member`. The membership trigger
+     writes `member.role_changed { from, to: 'owner' }` with `actor_id` null;
+   - else (the user was the only member) deletes the workspace. Memberships, invitations and
+     audit rows cascade, exactly as for an owner-initiated delete. Data that belongs only to a
+     deleted person is not kept.
+2. The row is deleted; the FK cascades remove `profiles`, the user's `workspace_members` rows
+   (`protect_last_owner()` lets them through because the `auth.users` row is gone; each is
+   audited as `member.removed` with `actor_id` null) and set `workspaces.created_by`,
+   `invitations.invited_by` and `audit_events.actor_id` to null where they pointed at the user.
+
+Rules that follow: a user can always be deleted (the last-owner guard never blocks account
+deletion); no workspace is left without an owner; a workspace with other members survives its
+owner; a workspace nobody else can reach is removed. Tested in
+`supabase/tests/12_review_fixes.sql`. The UI copy for "Delete account" (Phase 5) must say that
+solely-owned workspaces are handed to the longest-standing admin or member, and deleted when
+empty.
 
 ## Policy matrix
 
@@ -206,21 +274,37 @@ and no table grant, so it is denied for `authenticated`. `o/a` means owner or ad
 | ------------------- | ----------------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------- |
 | `profiles`          | own row, or `shares_workspace_with(id)`         | none (trigger)                                                 | own row; check `id = auth.uid()`; cols `full_name`, `avatar_url` | none                                                      |
 | `workspaces`        | `is_workspace_member(id)`                       | check `created_by = auth.uid()`                                | o/a; cols `name`, `slug`                            | owner                                                                  |
-| `workspace_members` | `is_workspace_member(workspace_id)`             | o/a; new `role = 'owner'` only if actor is owner               | owner; col `role`; last-owner trigger               | self, or owner, or admin when target `role <> 'owner'`; last-owner trigger |
-| `invitations`       | o/a                                             | o/a; `invited_by = auth.uid()`; `role = 'owner'` only if owner | none (`accept_invitation()` only)                   | o/a                                                                    |
+| `workspace_members` | `is_workspace_member(workspace_id)`             | none (`handle_new_workspace()` and `accept_invitation()` only, since 003) | owner; col `role`; last-owner trigger   | self, or owner, or admin when target `role <> 'owner'`; last-owner trigger |
+| `invitations`       | o/a; cols all except `token`                    | o/a; `invited_by = auth.uid()`; `role = 'owner'` only if owner; cols `workspace_id, email, role, invited_by` | none (`accept_invitation()` only) | o/a                                                   |
 | `audit_events`      | `is_workspace_member(workspace_id)`             | none                                                           | none                                                | none                                                                   |
 
-Policy names:
+Policy names (`workspace_members_insert_owner_admin` was dropped in migration 003):
 
 ```
 profiles_select_self_or_shared_workspace   profiles_update_self
 workspaces_select_member                   workspaces_insert_creator
 workspaces_update_owner_admin              workspaces_delete_owner
-workspace_members_select_member            workspace_members_insert_owner_admin
-workspace_members_update_owner             workspace_members_delete_owner_admin_or_self
+workspace_members_select_member            workspace_members_update_owner
+workspace_members_delete_owner_admin_or_self
 invitations_select_owner_admin             invitations_insert_owner_admin
 invitations_delete_owner_admin             audit_events_select_member
 ```
+
+## Review fixes (migration `20261102090000_003_review_fixes.sql`)
+
+Applied 2026-11-02 after review round 1 of Phase 2. Each item is a `create or replace`,
+`revoke`/`grant` or `alter table` on migration 001/002 objects; nothing was edited in place.
+
+| # | Finding                                                       | Fix                                                                                                  |
+| - | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 1 | Clients could set `id`, `token`, `expires_at`, `accepted_at` on insert; duplicate pending invitations; no address check | Column-level insert grant; `invitations_pending_unique`; `invitations_email_format_check`; `invite-member` deletes expired rows and maps `23505` to the idempotent response |
+| 2 | Owners/admins could read invitation tokens                    | Column-level select grant without `token`                                                            |
+| 3 | Owners/admins could add any user to a workspace without consent | Insert grant and policy on `workspace_members` removed; acceptance is the only path                 |
+| 4 | Two concurrent owner removals could leave zero owners         | Advisory xact lock per workspace in `protect_last_owner()`                                           |
+| 5 | Deleting a sole owner's account failed on the guard or orphaned the workspace | `handle_user_deleted()` succession; guard lets the `auth.users` cascade through       |
+| 6 | `profiles.email` went stale after an email change; unbounded `full_name` at signup | `handle_user_email_changed()`; `left(full_name, 100)`                             |
+| 7 | No bounds on `profiles.full_name` / `avatar_url`              | Named check constraints                                                                              |
+| 8 | Invitee emails in a log readable by every member              | Invitation audit metadata is `{ invitation_id, role, ... }`                                          |
 
 ## RLS recursion note
 
@@ -290,12 +374,16 @@ Request `{ workspaceId: uuid, email: string, role: 'owner' | 'admin' | 'member' 
 trimmed and lowercased, 3..320 chars and must be an email address. Response
 `200 { data: { id, email, role, expiresAt } }`. Rules: caller must be owner or admin (`403`);
 only an owner may invite as owner (`403`); email already a member -> `409`; a pending, unexpired
-invitation for the same email is returned unchanged (`200`, idempotent, same `id`).
+invitation for the same email is returned unchanged (`200`, idempotent, same `id`); an expired
+pending invitation for the email is deleted first (audited as `invitation.revoked`) and a new
+one created (`200`, new `id`). Two concurrent requests for a new email both answer `200` with
+the same `id`: the loser's insert hits `invitations_pending_unique` (`23505`) and returns the
+winner's row.
 
 The lookups (caller role, current members' emails, pending invitations) use the service-role
-client. The insert deliberately uses the caller's own client: RLS re-checks owner/admin,
-`invited_by = auth.uid()` and the owner-only rule as a second line of defence, and the
-`invitations_audit` trigger records the caller as `actor_id` of `invitation.created` (with the
+client. The expired-row delete and the insert deliberately use the caller's own client: RLS
+re-checks owner/admin, `invited_by = auth.uid()` and the owner-only rule as a second line of
+defence, and the `invitations_audit` trigger records the caller as `actor_id` (with the
 service-role client `auth.uid()` would be null and the actor lost). Nothing is double-logged.
 
 ### `accept-invitation` (POST)
@@ -323,7 +411,9 @@ completing Phase 2.
 ```
 src/app/
   providers.tsx        QueryClientProvider, <AuthStateSync />, <Toaster /> (sonner)
-  router.tsx           createBrowserRouter: the route map below
+  router.tsx           createBrowserRouter: the route map below. Pages are `React.lazy` chunks
+                       behind a `Suspense` boundary (`FullPageSpinner`); layouts, guards and the
+                       workspace provider stay in the main bundle
   navigation.ts        getPrimaryNavItems(workspaceId, role) -> Dashboard, Members, Workspace
                        settings (owner/admin); settingsNavItems -> Profile
   layouts/             AppLayout (sidebar + header + <Outlet />), SidebarNav, UserMenu, AuthLayout
@@ -341,7 +431,8 @@ src/features/auth/
 src/features/profile/
   api/                 useProfile (['profile', userId]), useUpdateProfile
   schemas/profile.ts   Zod: fullName 1..100
-  lib/                 display-name.ts (name/initials), profile-errors.ts (PostgREST codes -> text)
+  lib/                 display-name.ts (name; initials, max 2, from the email local part only),
+                       profile-errors.ts (PostgREST codes -> text, shares src/lib/postgrest-errors)
   components/pages/    ProfileForm, ProfileSettingsPage
 src/features/workspaces/
   api/                 useWorkspaces(userId) (['workspaces', userId]: workspace_members with
@@ -353,9 +444,10 @@ src/features/workspaces/
   lib/                 slug.ts (slugify, SLUG_PATTERN), workspace-errors.ts (23505 -> "slug
                        already taken", 23514, 42501, PGRST116, WorkspaceNotFoundError),
                        workspace-permissions.ts (canManageWorkspace o/a, canDeleteWorkspace owner),
-                       workspace-routes.ts (WORKSPACE_ROUTES, swapWorkspaceInPath),
-                       workspace-storage.ts (localStorage per user), audit-labels.ts (action ->
-                       sentence, actor name or "Someone")
+                       workspace-routes.ts (WORKSPACE_ROUTES, swapWorkspaceInPath,
+                       routeAfterLeavingWorkspace), workspace-storage.ts (localStorage per user),
+                       audit-labels.ts (action -> sentence, actor name or "Someone"; invitation
+                       events name the role, never an email: metadata is `invitation_id`, `role`)
   context/             workspace-context.ts (WorkspaceContext, useCurrentWorkspace),
                        WorkspaceProvider.tsx
   components/          WorkspaceSwitcher, CreateWorkspaceDialog, CreateWorkspaceForm,
@@ -369,12 +461,13 @@ src/features/members/
                        (functions.invoke('invite-member')), useRevokeInvitation (delete under RLS),
                        useChangeMemberRole (update role, owner only), useRemoveMember (delete:
                        remove or self-leave), useAcceptInvitation(token) (query keyed by token,
-                       functions.invoke('accept-invitation'), retry false); keys.ts
+                       functions.invoke('accept-invitation'), retry false, gcTime 0); keys.ts
   schemas/invite.ts    Zod: email (shared emailSchema), role enum
   lib/                 member-errors.ts (MemberActionError { code }, parseFunctionError reads
                        `await error.context.json()` of a FunctionsHttpError and falls back to the
-                       HTTP status, memberErrorFromPostgrest maps P0001 "last owner" -> last_owner,
-                       getMemberErrorMessage), member-permissions.ts (canInvite, invitableRoles,
+                       HTTP status, memberErrorFromPostgrest(error, 'read' | 'write') maps P0001
+                       "last owner" -> last_owner and PGRST116 -> forbidden on a write / not_found
+                       on a read, getMemberErrorMessage), member-permissions.ts (canInvite, invitableRoles,
                        canChangeRole, canRemoveMember: the policy matrix in TypeScript)
   components/          MembersTable (+ skeleton), MemberActionsMenu (change role / remove / leave
                        with confirm dialog), InviteMemberForm, PendingInvitations
@@ -418,7 +511,8 @@ labelled input, inline `FieldError`, `aria-invalid`/`aria-describedby`) and `For
   trigger copies into `profiles.full_name`. When email confirmation is on, Supabase answers an
   existing email with a user whose `identities` is empty; `useSignUp` turns that into
   `user_already_exists` so the form shows the same message as the unconfirmed flow.
-- `useProfile()` is enabled only once `user.id` is known and keys by it; `useUpdateProfile()`
+- `useProfile()` keys by `user.id` and passes `skipToken` as `queryFn` until it is known (the
+  same pattern disables every workspace-scoped query without a non-null assertion); `useUpdateProfile()`
   sends only `full_name` (the column grant allows `full_name` and `avatar_url`) and updates
   plus invalidates `['profile', userId]`.
 
@@ -449,7 +543,14 @@ defaults to the first workspace by name and falls back to the first remaining on
 selected workspace disappears (left or deleted). `useCurrentWorkspace()` exposes
 `{ workspaces, workspace, role, workspaceId, setWorkspaceId, isLoading, isError, refetch }`.
 The selection is derived during render (no setState in effects); the only effect persists the
-effective choice to storage.
+effective choice to storage. The context value is memoised on `refetch`, `isPending`, `isError`
+and `error` (not on the query result object), so consumers do not re-render on every fetch tick.
+
+Deleting or leaving the current workspace navigates first and refetches second: `DangerZone`
+and `MemberActionsMenu` go to `routeAfterLeavingWorkspace(workspaces, id)` (the first remaining
+workspace's dashboard, else `/workspaces/new`) computed from the list already in hand, and
+`useDeleteWorkspace` / `useRemoveMember` invalidate the workspace list without awaiting it, so
+`WorkspaceRoute` never flashes "Workspace not found" for the workspace that was just left.
 
 Workspace pages live under `/w/:workspaceId`. `WorkspaceRoute` makes the URL the source of
 truth: it calls `setWorkspaceId(param)` when the user is a member, renders a "Workspace not
@@ -469,7 +570,9 @@ Functions, and the mapped error (`last_owner`, `forbidden`, ...) is shown as a t
 Writes that RLS filters to zero rows produce no Postgres error, so the delete hooks ask for the
 affected ids (`.select('id')`) and throw `WorkspaceNotFoundError` / `MemberActionError('forbidden')`
 when nothing came back; single-row updates use `.single()` so the zero-row case surfaces as
-`PGRST116`. `workspace_members.user_id` and `audit_events.actor_id` reference `auth.users`, not
+`PGRST116`, which `memberErrorFromPostgrest(error, 'write')` reports as `forbidden` (the row
+exists; the caller may not change it), keeping `not_found` for genuine by-id read misses.
+`workspace_members.user_id` and `audit_events.actor_id` reference `auth.users`, not
 `profiles`, so `useMembers` and `useAuditEvents` load the visible profiles in a second query
 (`.in('id', ...)`), falling back to "Someone" when RLS hides an actor.
 
@@ -481,13 +584,18 @@ when nothing came back; single-row updates use `.single()` so the zero-row case 
    `await error.context.json()` (`error.code`), falling back to the HTTP status for bodies that
    are not the project envelope (the edge runtime's own 401). `conflict` -> "already a member",
    `forbidden`, `validation_error`, `unauthorized`, `internal` each have one message in
-   `member-errors.ts`. The pending list refetches; no email is sent yet (Phase 4 follow-up), and
-   the form says so. Locally the token is read from the database (`docs/operations.md`).
+   `member-errors.ts`. The pending list refetches; no email is sent yet (Phase 4 follow-up) and
+   the form says "Email delivery is not set up yet. The invitee can join once invitation emails
+   are enabled." Locally the token is read from the database (`docs/operations.md`).
 2. The invitee opens `/invite/<token>`. The route is protected, so a signed-out user is sent to
-   `/auth/sign-in?redirectTo=%2Finvite%2F<token>` and returns to it after signing in.
+   `/auth/sign-in?redirectTo=%2Finvite%2F<token>` and returns to it after signing in. The
+   sign-in and sign-up pages keep `?redirectTo` on their cross-links, so an invitee who first
+   has to create an account still lands on the invite.
 3. `AcceptInvitationPage` runs `useAcceptInvitation(token)`: a query keyed by the token (not a
    mutation in an effect), so StrictMode's double mount cannot redeem the token twice;
-   `retry: false` because every error is final. The query refetches the workspace list before
+   `retry: false` because every error is final; `gcTime: 0` drops the result when the page
+   unmounts, so reopening the link in the same session asks the server again (and gets the
+   404 copy) instead of replaying the success. The query refetches the workspace list before
    resolving, then the page calls `setWorkspaceId(workspaceId)`, toasts "Joined <name>" and
    navigates to `/w/<workspaceId>`. `not_found` (404) -> "This invitation is no longer valid",
    `invitation_expired` (410) -> "has expired", `forbidden` (403) -> "sent to a different email
@@ -532,6 +640,8 @@ returns nothing for that id either way, so existence is not revealed).
 - Part 6 (done 2026-10-30): workspaces and members UI, `WorkspaceProvider`, workspace-scoped
   routes and the invite acceptance page; Phase 2 exit criteria met. Follow-ups recorded in
   `docs/PLANNING.md` (invitation email delivery, code-splitting, profile FKs for embedding).
-- Phase 3: migration 003 (`modules`, `field_definitions`, `records`, `attachments`) and the
+- Part 8a (done 2026-11-02): migration 003 (review fixes above), `12_review_fixes.sql`, the
+  `invite-member` race handling. Suite: 12 files, 380 tests.
+- Phase 3: migration 004 (`modules`, `field_definitions`, `records`, `attachments`) and the
   `attachments` storage bucket; Edge Function `export-records`.
 - Phase 4: billing tables, `check_entitlement` and `create-workspace`.

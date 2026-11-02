@@ -1,7 +1,9 @@
--- 01: structural guarantees of migration 001.
+-- 01: structural guarantees of migrations 001 to 003.
 --   * every table in public has row level security enabled
 --   * anon has no privilege on any public table; authenticated has exactly the
---     table and column grants documented in docs/architecture.md
+--     table and column grants documented in docs/architecture.md (migration 003
+--     removed the insert grant on workspace_members, narrowed invitations to
+--     column-level select/insert grants and hid invitations.token)
 --   * the policy set per table matches the documented names
 --   * RLS helpers are security definer, stable, have a fixed search_path and
 --     are executable by authenticated only; trigger functions by nobody
@@ -11,7 +13,7 @@
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(84);
+select plan(95);
 
 -- ---------------------------------------------------------------------------
 -- Row level security
@@ -48,10 +50,11 @@ select table_privs_are('public', 'profiles', 'authenticated', array['SELECT'],
   'authenticated may only select profiles at table level');
 select table_privs_are('public', 'workspaces', 'authenticated', array['SELECT', 'INSERT', 'DELETE'],
   'authenticated may select, insert, delete workspaces at table level');
-select table_privs_are('public', 'workspace_members', 'authenticated', array['SELECT', 'INSERT', 'DELETE'],
-  'authenticated may select, insert, delete workspace_members at table level');
-select table_privs_are('public', 'invitations', 'authenticated', array['SELECT', 'INSERT', 'DELETE'],
-  'authenticated may select, insert, delete invitations at table level');
+select table_privs_are('public', 'workspace_members', 'authenticated', array['SELECT', 'DELETE'],
+  'authenticated may select, delete workspace_members at table level (no insert: invitation acceptance only)');
+-- Migration 003: select and insert on invitations are column-level grants.
+select table_privs_are('public', 'invitations', 'authenticated', array['DELETE'],
+  'authenticated may only delete invitations at table level');
 select table_privs_are('public', 'audit_events', 'authenticated', array['SELECT'],
   'authenticated may only select audit_events');
 
@@ -71,14 +74,20 @@ select column_privs_are('public', 'workspaces', 'slug', 'authenticated', array['
   'authenticated may update workspaces.slug');
 select column_privs_are('public', 'workspaces', 'created_by', 'authenticated', array['SELECT', 'INSERT'],
   'authenticated may not update workspaces.created_by');
-select column_privs_are('public', 'workspace_members', 'role', 'authenticated', array['SELECT', 'INSERT', 'UPDATE'],
+select column_privs_are('public', 'workspace_members', 'role', 'authenticated', array['SELECT', 'UPDATE'],
   'authenticated may update workspace_members.role');
-select column_privs_are('public', 'workspace_members', 'user_id', 'authenticated', array['SELECT', 'INSERT'],
-  'authenticated may not update workspace_members.user_id');
-select column_privs_are('public', 'workspace_members', 'workspace_id', 'authenticated', array['SELECT', 'INSERT'],
-  'authenticated may not update workspace_members.workspace_id');
-select column_privs_are('public', 'invitations', 'accepted_at', 'authenticated', array['SELECT', 'INSERT'],
-  'authenticated may not update invitations.accepted_at');
+select column_privs_are('public', 'workspace_members', 'user_id', 'authenticated', array['SELECT'],
+  'authenticated may not insert or update workspace_members.user_id');
+select column_privs_are('public', 'workspace_members', 'workspace_id', 'authenticated', array['SELECT'],
+  'authenticated may not insert or update workspace_members.workspace_id');
+select column_privs_are('public', 'invitations', 'accepted_at', 'authenticated', array['SELECT'],
+  'authenticated may only read invitations.accepted_at');
+select column_privs_are('public', 'invitations', 'email', 'authenticated', array['SELECT', 'INSERT'],
+  'authenticated may read and insert invitations.email');
+select column_privs_are('public', 'invitations', 'id', 'authenticated', array['SELECT'],
+  'authenticated may read but not supply invitations.id');
+select column_privs_are('public', 'invitations', 'token', 'authenticated', '{}'::text[],
+  'authenticated has no privilege on invitations.token');
 select column_privs_are('public', 'audit_events', 'metadata', 'authenticated', array['SELECT'],
   'authenticated may not update audit_events.metadata');
 
@@ -93,7 +102,7 @@ select policies_are('public', 'workspaces',
         'workspaces_update_owner_admin', 'workspaces_delete_owner'],
   'workspaces has exactly the documented policies');
 select policies_are('public', 'workspace_members',
-  array['workspace_members_select_member', 'workspace_members_insert_owner_admin',
+  array['workspace_members_select_member',
         'workspace_members_update_owner', 'workspace_members_delete_owner_admin_or_self'],
   'workspace_members has exactly the documented policies');
 select policies_are('public', 'invitations',
@@ -141,7 +150,9 @@ insert into trigger_fn values
   ('handle_new_workspace', true),
   ('protect_last_owner', true),
   ('audit_workspace_member_change', true),
-  ('audit_invitation_change', true);
+  ('audit_invitation_change', true),
+  ('handle_user_deleted', true),
+  ('handle_user_email_changed', true);
 
 select is_definer('public', fname, '{}'::text[], format('%s is security definer', fname))
 from trigger_fn where definer;
@@ -161,8 +172,8 @@ order by p.proname;
 
 select is(
   (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace),
-  11,
-  'migrations 001 and 002 define exactly eleven functions in public'
+  13,
+  'migrations 001 to 003 define exactly thirteen functions in public'
 );
 
 select * from finish();

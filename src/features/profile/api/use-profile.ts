@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQuery } from '@tanstack/react-query'
 
 import { useSession } from '@/features/auth/api/use-session'
 import { supabase } from '@/lib/supabase'
@@ -20,7 +20,6 @@ export function useProfile() {
 
   return useQuery({
     queryKey: profileKeys.detail(userId ?? ''),
-    queryFn: () => fetchProfile(userId!),
-    enabled: userId !== undefined,
+    queryFn: userId ? () => fetchProfile(userId) : skipToken,
   })
 }

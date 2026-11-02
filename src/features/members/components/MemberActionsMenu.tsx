@@ -24,7 +24,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { WORKSPACE_ROUTES } from '@/features/workspaces/lib/workspace-routes'
+import { useCurrentWorkspace } from '@/features/workspaces/context/workspace-context'
+import { routeAfterLeavingWorkspace } from '@/features/workspaces/lib/workspace-routes'
 import { WORKSPACE_ROLES, type WorkspaceRole } from '@/types/database'
 
 import { useChangeMemberRole } from '../api/use-change-member-role'
@@ -56,6 +57,7 @@ export function MemberActionsMenu({
   const [confirmRemove, setConfirmRemove] = useState(false)
   const changeRole = useChangeMemberRole(workspaceId)
   const removeMember = useRemoveMember(workspaceId)
+  const { workspaces } = useCurrentWorkspace()
   const navigate = useNavigate()
 
   const showRoles = canChangeRole(callerRole, { isSelf })
@@ -74,11 +76,13 @@ export function MemberActionsMenu({
   async function handleRemove() {
     try {
       await removeMember.mutateAsync(member.user_id)
-      setConfirmRemove(false)
       if (isSelf) {
+        // Navigate before the (not awaited) list refetch drops this workspace,
+        // otherwise `WorkspaceRoute` would flash "Workspace not found".
+        navigate(routeAfterLeavingWorkspace(workspaces, workspaceId), { replace: true })
         toast.success('You left the workspace')
-        navigate(WORKSPACE_ROUTES.root, { replace: true })
       } else {
+        setConfirmRemove(false)
         toast.success(`${memberName} was removed`)
       }
     } catch (error) {

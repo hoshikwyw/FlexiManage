@@ -9,10 +9,15 @@ export function getDisplayName(profile: NameSource, fallbackEmail?: string | nul
   return profile?.email ?? fallbackEmail ?? 'Account'
 }
 
-/** Up to two initials for an avatar fallback ("Ada Lovelace" -> "AL", "ada@x.io" -> "A"). */
+/**
+ * Up to two initials for an avatar fallback: "Ada Lovelace" -> "AL",
+ * "ada@x.io" -> "A", "ada.lovelace@x.io" -> "AL". For an email only the local
+ * part (before `@`) is used so the domain never contributes a letter.
+ */
 export function getInitials(name: string): string {
-  const parts = name
-    .split(/[\s@._-]+/)
+  const source = name.includes('@') ? (name.split('@')[0] ?? '') : name
+  const parts = source
+    .split(/[\s._-]+/)
     .filter(Boolean)
     .slice(0, 2)
   const initials = parts.map((part) => part.charAt(0).toUpperCase()).join('')

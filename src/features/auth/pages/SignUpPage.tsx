@@ -1,4 +1,4 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { AuthCard } from '../components/AuthCard'
@@ -7,6 +7,9 @@ import { AUTH_ROUTES } from '../lib/auth-redirects'
 
 export function SignUpPage() {
   const navigate = useNavigate()
+  // Keep `?redirectTo=` on the cross-link so the invite path survives a detour
+  // through sign-in.
+  const { search } = useLocation()
 
   return (
     <AuthCard
@@ -15,7 +18,10 @@ export function SignUpPage() {
       footer={
         <span>
           Already have an account?{' '}
-          <Link to={AUTH_ROUTES.signIn} className="text-foreground underline underline-offset-4">
+          <Link
+            to={{ pathname: AUTH_ROUTES.signIn, search }}
+            className="text-foreground underline underline-offset-4"
+          >
             Sign in
           </Link>
         </span>

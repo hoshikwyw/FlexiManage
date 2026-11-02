@@ -64,8 +64,24 @@ jobs:
           version: 2.122.0
 
       - name: Start local Supabase stack
-        # A fresh start applies supabase/migrations and supabase/seed.sql.
+        # A fresh start applies supabase/migrations and supabase/seed.sql and serves the Edge
+        # Functions at http://127.0.0.1:54321/functions/v1/<name> through the edge runtime.
         run: supabase start
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          # The Supabase edge runtime is Deno 2.
+          deno-version: v2.x
+
+      - name: Typecheck Edge Functions
+        # Deno is not part of the local toolchain (functions run in the Docker edge runtime), so
+        # this is the only place the functions are type-checked.
+        run: deno check --config supabase/functions/deno.json supabase/functions/*/index.ts
+
+      - name: Edge Function smoke test
+        # Status codes only: no credentials -> 401, non-member invite -> 403, unknown token -> 404.
+        run: bash scripts/ci/functions-smoke.sh
 
       - name: Run pgTAP tests
         run: supabase test db

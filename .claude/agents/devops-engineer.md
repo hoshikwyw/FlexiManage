@@ -1,6 +1,6 @@
 ---
 name: devops-engineer
-description: Use for project tooling and delivery: Vite and TypeScript config, ESLint and Prettier, npm scripts, GitHub Actions CI, environment files, Supabase CLI setup, staging and production environments, static hosting deployment, backups and monitoring.
+description: "Use for project tooling and delivery: Vite and TypeScript config, ESLint and Prettier, npm scripts, GitHub Actions CI, environment files, Supabase CLI setup, staging and production environments, static hosting deployment, backups and monitoring."
 tools: Read, Glob, Grep, Write, Edit, Bash
 model: inherit
 ---

@@ -12,6 +12,10 @@ import { memberKeys } from './keys'
  * `workspace_members_delete_owner_admin_or_self` decides). The last-owner
  * trigger blocks the last owner from leaving (`last_owner`). Zero deleted rows
  * means RLS denied it and is reported as `forbidden`.
+ *
+ * When the caller leaves, the workspace list is invalidated without awaiting:
+ * the menu navigates away (`routeAfterLeavingWorkspace`) as soon as the
+ * mutation resolves, before the refetch drops the workspace under the page.
  */
 export function useRemoveMember(workspaceId: string) {
   const queryClient = useQueryClient()
@@ -25,18 +29,17 @@ export function useRemoveMember(workspaceId: string) {
         .eq('workspace_id', workspaceId)
         .eq('user_id', userId)
         .select('user_id')
-      if (error) throw memberErrorFromPostgrest(error)
+      if (error) throw memberErrorFromPostgrest(error, 'write')
       if (data.length === 0) throw new MemberActionError('forbidden')
       return { userId, isSelf: user?.id === userId }
     },
-    onSuccess: async ({ isSelf }) => {
+    onSuccess: ({ isSelf }) => {
       if (isSelf) {
         queryClient.removeQueries({ queryKey: memberKeys.members(workspaceId) })
         queryClient.removeQueries({ queryKey: memberKeys.invitations(workspaceId) })
         queryClient.removeQueries({ queryKey: workspaceKeys.auditAll(workspaceId) })
         queryClient.removeQueries({ queryKey: workspaceKeys.detail(workspaceId) })
-        // Await so the caller can navigate once the workspace list no longer has it.
-        if (user) await queryClient.invalidateQueries({ queryKey: workspaceKeys.list(user.id) })
+        if (user) void queryClient.invalidateQueries({ queryKey: workspaceKeys.list(user.id) })
         return
       }
       void queryClient.invalidateQueries({ queryKey: memberKeys.members(workspaceId) })

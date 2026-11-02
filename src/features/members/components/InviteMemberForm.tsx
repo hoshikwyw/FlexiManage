@@ -34,7 +34,7 @@ export function InviteMemberForm({ workspaceId, callerRole }: InviteMemberFormPr
     try {
       const invitation = await inviteMember.mutateAsync(values)
       form.reset({ email: '', role: values.role })
-      toast.success(`Invitation sent to ${invitation.email}`)
+      toast.success(`Invitation created for ${invitation.email}`)
     } catch {
       // Rendered from `inviteMember.error`.
     }
@@ -63,7 +63,8 @@ export function InviteMemberForm({ workspaceId, callerRole }: InviteMemberFormPr
       />
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-muted-foreground text-sm">
-          An email with the invite link will be sent. Invitations expire after 7 days.
+          Email delivery is not set up yet. The invitee can join once invitation emails are enabled.
+          Invitations expire after 7 days.
         </p>
         <SubmitButton pending={inviteMember.isPending} pendingLabel="Sending...">
           Send invitation

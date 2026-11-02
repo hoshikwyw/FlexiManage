@@ -2,6 +2,9 @@
 -- The critical case: a user must not be able to insert themselves into a
 -- workspace they do not belong to, nor see, change or remove its members.
 -- Covers the four section 7 matrix cells for `workspace_members` both ways.
+-- Since migration 003 authenticated has no insert grant at all (membership is
+-- created only by accept_invitation() and the workspace trigger), so inserts
+-- fail with "permission denied" before RLS is even evaluated.
 create extension if not exists pgtap with schema extensions;
 
 begin;
@@ -67,7 +70,7 @@ select throws_ok(
   format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'member')$sql$,
          tests.ws_b(), tests.alice()),
   '42501',
-  'new row violates row-level security policy for table "workspace_members"',
+  'permission denied for table workspace_members',
   'alice: cannot add herself to workspace B as member'
 );
 select throws_ok(

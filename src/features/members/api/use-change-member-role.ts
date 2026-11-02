@@ -17,6 +17,8 @@ export interface ChangeMemberRoleInput {
  * Updates `workspace_members.role` (owner only per RLS
  * `workspace_members_update_owner`). The `protect_last_owner` trigger raises
  * `P0001` when the change would leave no owner; mapped to `last_owner`.
+ * `.single()` turns a zero-row update (RLS hid the row) into `PGRST116`, which
+ * is reported as `forbidden`: the member exists, the caller may not change it.
  */
 export function useChangeMemberRole(workspaceId: string) {
   const queryClient = useQueryClient()
@@ -31,7 +33,7 @@ export function useChangeMemberRole(workspaceId: string) {
         .eq('user_id', userId)
         .select('*')
         .single()
-      if (error) throw memberErrorFromPostgrest(error)
+      if (error) throw memberErrorFromPostgrest(error, 'write')
       return data
     },
     onSuccess: (member) => {

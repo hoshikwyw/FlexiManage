@@ -23,7 +23,7 @@ export function useRevokeInvitation(workspaceId: string) {
         .eq('id', invitationId)
         .eq('workspace_id', workspaceId)
         .select('id')
-      if (error) throw memberErrorFromPostgrest(error)
+      if (error) throw memberErrorFromPostgrest(error, 'write')
       if (data.length === 0) throw new MemberActionError('not_found')
       return invitationId
     },

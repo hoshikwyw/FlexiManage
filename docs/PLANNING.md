@@ -1,7 +1,7 @@
 # FlexiManage Project Plan
 
 Living plan for the FlexiManage MVP. Source: FlexiManage React + Vite SaaS Plan (October 2026 edition).
-Owner: project lead. Updated by the `product-planner` agent. Last updated: 2026-10-30.
+Owner: project lead. Updated by the `product-planner` agent. Last updated: 2026-11-02.
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done, `[-]` dropped.
 
@@ -87,12 +87,28 @@ Met 2026-10-30: verified end to end against the local stack (sign up, create "Pi
 bob@example.com, accept through `/invite/:token`, leave, delete); `supabase test db` passes in the
 `db-tests` CI job. Open items D5/D6 are documentation only and do not block M2.
 
+Review round 1 (2026-10-30, fixed 2026-11-02): migration
+`supabase/migrations/20261102090000_003_review_fixes.sql` plus `supabase/tests/12_review_fixes.sql`
+(suite now 12 files, 380 tests) and an `invite-member` change. Fixed: (1) `invitations` insert
+limited to `workspace_id, email, role, invited_by`, email format check, one pending invitation per
+workspace and address (`invite-member` deletes expired rows first and treats `23505` as the
+idempotent case); (2) `invitations.token` hidden from API clients (column-level select grant);
+(3) direct inserts into `workspace_members` removed for every role, acceptance is the only path
+(product decision); (4) last-owner guard serialised with a per-workspace advisory lock;
+(5) account deletion: a `before delete on auth.users` trigger promotes the earliest-joined admin,
+else earliest member, else deletes the workspace, and the guard lets the cascade through;
+(6) `profiles.email` follows `auth.users.email`, `full_name` truncated to 100 at signup;
+(7) named check constraints on `profiles.full_name` and `profiles.avatar_url`; (8) invitation
+audit metadata carries `invitation_id` and `role`, never the invitee email (product decision).
+Details in `docs/architecture.md` ("Review fixes", "Account deletion") and
+`docs/operations.md` ("Production prerequisites").
+
 Follow-ups from Phase 2 (scheduled in Phase 4 unless noted):
 - Invitation email delivery (provider + template): `invite-member` creates the row and the audit
   event but no email is sent yet; locally the token is read from the database
-  (`docs/operations.md`). The members page tells the inviter an email will be sent.
-- Code-splitting: the main Vite chunk is above 500 kB (supabase-js, Base UI, TanStack Query);
-  `React.lazy` for route pages or a `manualChunks` split, before Phase 5 performance checks.
+  (`docs/operations.md`). The members page states that email delivery is not set up yet.
+- [x] Code-splitting (done 2026-11-02): route pages are lazy-loaded; the main chunk dropped from
+  908 kB to 272 kB.
 - PostgREST embedding for `workspace_members.user_id` and `audit_events.actor_id`: both reference
   `auth.users`, so the UI loads profiles in a second query. A migration adding
   `references public.profiles` (or a view) would allow a single embedded select (supabase-engineer).
@@ -101,7 +117,7 @@ Follow-ups from Phase 2 (scheduled in Phase 4 unless noted):
 
 Agents: supabase-engineer, frontend-dev, test-engineer, code-reviewer.
 
-- [ ] Migration 002: `modules`, `field_definitions`, `records` (structured core + `custom_values jsonb`), `attachments` with RLS (supabase-engineer).
+- [ ] Migration 004 (001 tenancy, 002 `accept_invitation`, 003 review fixes are taken): `modules`, `field_definitions`, `records` (structured core + `custom_values jsonb`), `attachments` with RLS (supabase-engineer).
 - [ ] Storage bucket `attachments` with path policy `{workspace_id}/{record_id}/{file}` (supabase-engineer).
 - [ ] Full-text or trigram search on records scoped by workspace (supabase-engineer).
 - [ ] Field-type registry: text, number, date, select, checkbox, currency (frontend-dev).
@@ -120,7 +136,7 @@ Exit criteria: the chosen workflow from D1 can be completed end to end with real
 
 Agents: supabase-engineer, frontend-dev, test-engineer.
 
-- [ ] Migration 003: `plans`, `subscriptions`, `entitlements`, `usage_counters` seeded with Free, Pro, Business (supabase-engineer).
+- [ ] Migration 005: `plans`, `subscriptions`, `entitlements`, `usage_counters` seeded with Free, Pro, Business (supabase-engineer).
 - [ ] Postgres function `check_entitlement(workspace_id, resource)` called from insert triggers on members, modules, records, attachments (supabase-engineer).
 - [ ] Usage page showing counters against limits with over-limit state, no auto-deletion on downgrade (frontend-dev).
 - [ ] Admin-only and owner-only UI gating matching server rules (frontend-dev).
@@ -137,8 +153,9 @@ Agents: security-reviewer, test-engineer, devops-engineer, frontend-dev.
 - [ ] Full security review against the checklist in `.claude/agents/security-reviewer.md`; all Critical and High findings fixed.
 - [ ] Accessibility pass: keyboard navigation, labels, contrast, focus management.
 - [ ] Staging and production Supabase projects; environment separation verified.
+- [ ] GoTrue `enable_confirmations = true` and `double_confirm_changes = true` verified on staging and production (`docs/operations.md`, "Production prerequisites"): `accept_invitation()` relies on `email_confirmed_at`. Blocking for M5.
 - [ ] Backup and restore procedure written and rehearsed once (`docs/operations.md`).
-- [ ] Account deletion and data export procedure documented.
+- [ ] Account deletion and data export procedure documented. Database side done in migration 003 (`docs/architecture.md`, "Account deletion"); the self-service Edge Function, UI copy and export remain.
 - [ ] Error reporting and usage alerts configured.
 - [ ] Rate limiting on signup, invitations and export.
 

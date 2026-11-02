@@ -77,6 +77,18 @@ describe('memberErrorFromPostgrest', () => {
     expect(memberErrorFromPostgrest(pgError('23505', 'dup')).code).toBe('conflict')
     expect(memberErrorFromPostgrest(pgError('P0001', 'some other raise')).code).toBe('internal')
   })
+
+  it('reads a zero-row write (RLS hid the target) as forbidden, not as not_found', () => {
+    const error = memberErrorFromPostgrest(pgError('PGRST116', 'zero rows'), 'write')
+    expect(error.code).toBe('forbidden')
+    expect(getMemberErrorMessage(error)).toBe(MEMBER_ERROR_MESSAGES.forbidden)
+    // A by-id read that finds nothing is still a miss.
+    expect(memberErrorFromPostgrest(pgError('PGRST116', 'zero rows'), 'read').code).toBe(
+      'not_found',
+    )
+    // Other codes do not depend on the operation.
+    expect(memberErrorFromPostgrest(pgError('23505', 'dup'), 'write').code).toBe('conflict')
+  })
 })
 
 describe('getMemberErrorMessage', () => {

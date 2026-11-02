@@ -1,9 +1,10 @@
 import { AuthApiError, AuthError, AuthRetryableFetchError } from '@supabase/supabase-js'
 import { describe, expect, it } from 'vitest'
 
+import { NETWORK_ERROR_MESSAGE } from '@/lib/postgrest-errors'
+
 import {
   GENERIC_AUTH_ERROR_MESSAGE,
-  NETWORK_ERROR_MESSAGE,
   authErrorFromRedirectParams,
   getAuthErrorMessage,
 } from './auth-errors'

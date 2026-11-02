@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQuery } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 import type { Workspace } from '@/types/database'
@@ -20,7 +20,6 @@ export async function fetchWorkspace(workspaceId: string): Promise<Workspace> {
 export function useWorkspace(workspaceId: string | null | undefined) {
   return useQuery({
     queryKey: workspaceKeys.detail(workspaceId ?? ''),
-    queryFn: () => fetchWorkspace(workspaceId!),
-    enabled: typeof workspaceId === 'string' && workspaceId.length > 0,
+    queryFn: workspaceId ? () => fetchWorkspace(workspaceId) : skipToken,
   })
 }

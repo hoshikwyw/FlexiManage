@@ -2,7 +2,7 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import { renderWithProviders } from '@/test/render'
+import { renderWithWorkspace } from '@/test/workspace-context'
 import type { WorkspaceRole } from '@/types/database'
 
 import type { Member } from '../types'
@@ -40,7 +40,9 @@ const members = [
 ]
 
 function renderTable(callerRole: WorkspaceRole, callerUserId: string) {
-  return renderWithProviders(
+  // `MemberActionsMenu` reads the workspace list from the context to pick the
+  // destination after leaving.
+  return renderWithWorkspace(
     <MembersTable
       workspaceId={WORKSPACE_ID}
       members={members}

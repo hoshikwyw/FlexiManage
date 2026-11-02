@@ -15,10 +15,16 @@ function text(value: unknown, fallback: string): string {
   return typeof value === 'string' && value ? value : fallback
 }
 
+/** `(role)` suffix when the metadata names a role, otherwise nothing. */
+function roleSuffix(value: unknown): string {
+  return typeof value === 'string' && value ? ` (${value})` : ''
+}
+
 /**
- * Human-readable fragment for an audit action, e.g. `invited bob@example.com
- * as member`. Unknown actions fall back to the raw action so new server
- * events are still visible.
+ * Human-readable fragment for an audit action, e.g. `invited a member (admin)`.
+ * Invitation events carry `invitation_id` and `role` but never the invitee's
+ * email (migration 003), so the label never names a person. Unknown actions
+ * fall back to the raw action so new server events are still visible.
  */
 export function describeAuditAction(event: AuditEventWithActor): string {
   const m = metadataOf(event)
@@ -35,11 +41,11 @@ export function describeAuditAction(event: AuditEventWithActor): string {
     case 'member.removed':
       return isSelf ? 'left the workspace' : `removed a member (${text(m.role, 'member')})`
     case 'invitation.created':
-      return `invited ${text(m.email, 'someone')} as ${text(m.role, 'member')}`
+      return `invited a member${roleSuffix(m.role)}`
     case 'invitation.revoked':
-      return `revoked the invitation for ${text(m.email, 'someone')}`
+      return 'revoked an invitation'
     case 'invitation.accepted':
-      return `accepted an invitation as ${text(m.role, 'member')}`
+      return `joined via invitation${roleSuffix(m.role)}`
     default:
       return event.action
   }

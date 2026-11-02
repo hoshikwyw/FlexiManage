@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 
@@ -17,20 +17,24 @@ export function useExchangeAuthCode(code: string | null) {
 
   return useQuery({
     queryKey: authKeys.callback(code ?? ''),
-    enabled: code !== null,
-    queryFn: async (): Promise<AuthCodeExchangeResult> => {
-      const { data, error } = await supabase.auth.exchangeCodeForSession(code!)
-      if (error) throw error
-      queryClient.setQueryData(authKeys.session, data.session)
-      // supabase-js returns `redirectType` ('recovery' for password reset links,
-      // remembered next to the PKCE verifier) but does not declare it in
-      // `AuthTokenResponse`; read it defensively.
-      const { redirectType } = data as { redirectType?: string | null }
-      return {
-        session: data.session,
-        redirectType: redirectType === 'recovery' ? 'recovery' : null,
-      }
-    },
+    // `skipToken` keeps the query idle (and `code` narrowed to a string inside
+    // the fn) until the URL carries a code.
+    queryFn:
+      code === null
+        ? skipToken
+        : async (): Promise<AuthCodeExchangeResult> => {
+            const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+            if (error) throw error
+            queryClient.setQueryData(authKeys.session, data.session)
+            // supabase-js returns `redirectType` ('recovery' for password reset links,
+            // remembered next to the PKCE verifier) but does not declare it in
+            // `AuthTokenResponse`; read it defensively.
+            const { redirectType } = data as { redirectType?: string | null }
+            return {
+              session: data.session,
+              redirectType: redirectType === 'recovery' ? 'recovery' : null,
+            }
+          },
     retry: false,
     staleTime: Infinity,
     gcTime: Infinity,

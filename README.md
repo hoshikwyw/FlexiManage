@@ -12,7 +12,8 @@ Vitest + Testing Library, Playwright, GitHub Actions.
 ## Prerequisites
 
 - Node.js 24 or later and npm 11 or later (`node -v`, `npm -v`).
-- Git.
+- Git. Line endings are enforced as LF through `.gitattributes` (`* text=auto eol=lf`), so no
+  `core.autocrlf` setting is needed on Windows; files are checked out and committed as LF.
 - [Supabase CLI](https://supabase.com/docs/guides/local-development) for the `db:*` scripts
   (local database, migrations, type generation). Docker is required for `supabase start`.
 - Playwright browsers for end-to-end tests: `npx playwright install --with-deps chromium`
@@ -89,24 +90,39 @@ Add shadcn/ui components with `npx shadcn@latest add <component>`; they land in 
 
 ## Scripts
 
-| Script                    | Description                                                                                         |
-| ------------------------- | --------------------------------------------------------------------------------------------------- |
-| `npm run dev`             | Start the Vite dev server with hot module reload.                                                   |
-| `npm run build`           | Typecheck the app, then build the production bundle into `dist/`.                                   |
-| `npm run preview`         | Serve the production build locally.                                                                 |
-| `npm run typecheck`       | Run `tsc --noEmit` against `tsconfig.app.json`.                                                     |
-| `npm run lint`            | Run ESLint (flat config) over the whole repository.                                                 |
-| `npm run format`          | Format all files with Prettier.                                                                     |
-| `npm run format:check`    | Verify formatting without writing (used in CI).                                                     |
-| `npm run test`            | Run unit and component tests once with Vitest (jsdom).                                              |
-| `npm run test:watch`      | Run Vitest in watch mode.                                                                           |
-| `npm run test:e2e`        | Run Playwright end-to-end tests in `tests/e2e` (builds and previews first).                         |
-| `npm run test:db`         | Run the pgTAP database tests in `supabase/tests` against the local stack.                           |
-| `npm run db:start`        | Start the local Supabase stack in Docker (`supabase start`).                                        |
-| `npm run db:stop`         | Stop the local Supabase stack (`supabase stop`).                                                    |
-| `npm run db:reset`        | Reset the local Supabase database and re-apply migrations and seed.                                 |
-| `npm run db:types`        | Generate TypeScript types from the local database into `src/types/supabase.ts`.                     |
-| `npm run functions:serve` | Serve the Edge Functions in `supabase/functions` locally with hot reload (needs the stack running). |
+| Script                    | Description                                                                                                      |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`             | Start the Vite dev server with hot module reload.                                                                |
+| `npm run build`           | Typecheck the app, then build the production bundle into `dist/`.                                                |
+| `npm run preview`         | Serve the production build locally.                                                                              |
+| `npm run typecheck`       | Run `tsc -b` over every project in `tsconfig.json`: app (`src`, incl. co-located tests), node configs, `tests/`. |
+| `npm run lint`            | Run ESLint (flat config) over the whole repository.                                                              |
+| `npm run format`          | Format all files with Prettier.                                                                                  |
+| `npm run format:check`    | Verify formatting without writing (used in CI).                                                                  |
+| `npm run test`            | Run unit and component tests once with Vitest (jsdom).                                                           |
+| `npm run test:watch`      | Run Vitest in watch mode.                                                                                        |
+| `npm run test:e2e`        | Run Playwright end-to-end tests in `tests/e2e` (builds and previews first; see End-to-end tests).                |
+| `npm run test:db`         | Run the pgTAP database tests in `supabase/tests` against the local stack.                                        |
+| `npm run db:start`        | Start the local Supabase stack in Docker (`supabase start`).                                                     |
+| `npm run db:stop`         | Stop the local Supabase stack (`supabase stop`).                                                                 |
+| `npm run db:reset`        | Reset the local Supabase database and re-apply migrations and seed.                                              |
+| `npm run db:types`        | Generate TypeScript types from the local database into `src/types/supabase.ts`.                                  |
+| `npm run functions:serve` | Serve the Edge Functions in `supabase/functions` locally with hot reload (needs the stack running).              |
+
+CI helper scripts live in `scripts/ci` and are plain bash (LF):
+
+| Script                          | Description                                                                                                  |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `scripts/ci/functions-smoke.sh` | Smoke-test the Edge Functions on the running local stack (401 / 403 / 404 status codes; needs `curl`, `jq`). |
+
+## End-to-end tests
+
+`npm run test:e2e` builds the app and serves it with `vite preview` on port 4173. The build needs
+`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`; `playwright.config.ts` takes them from the
+environment or the Vite env files and otherwise injects placeholders, so a clean clone can run
+the unauthenticated smoke spec without a Supabase project. Tests that sign in or touch data need
+a real backend: start the local stack (`npm run db:start`) and point `.env.local` at it as
+described in Setup; placeholders are not used when `.env.local` defines the two variables.
 
 ## Local database
 
@@ -139,7 +155,9 @@ and `bob@example.com` (owns `workspace-b`), password `password123`; fixed ids li
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request: install, typecheck, lint, format
-check, unit tests and build on Node 24 with the npm cache enabled (`verify`), and in parallel starts
-the local Supabase stack, runs the pgTAP tests and fails if `src/types/supabase.ts` is out of date
-with the migrations (`db-tests`). A Playwright job follows once the primary journey exists.
+`.github/workflows/ci.yml` runs on every push and pull request: install, typecheck (all
+`tsconfig` projects), lint, format check, unit tests and build on Node 24 with the npm cache
+enabled (`verify`), and in parallel starts the local Supabase stack, type-checks the Edge
+Functions with Deno (`deno check`), runs `scripts/ci/functions-smoke.sh` against the served
+functions, runs the pgTAP tests and fails if `src/types/supabase.ts` is out of date with the
+migrations (`db-tests`). A Playwright job follows once the primary journey exists.

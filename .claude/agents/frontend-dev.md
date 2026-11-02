@@ -1,6 +1,6 @@
 ---
 name: frontend-dev
-description: Use for building or changing the React + Vite + TypeScript dashboard UI: routes, layouts, feature modules, forms, tables, TanStack Query hooks and shadcn/ui components. Follows the feature-folder layout in src/.
+description: "Use for building or changing the React + Vite + TypeScript dashboard UI: routes, layouts, feature modules, forms, tables, TanStack Query hooks and shadcn/ui components. Follows the feature-folder layout in src/."
 tools: Read, Glob, Grep, Write, Edit, Bash
 model: inherit
 ---

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQuery } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 
@@ -47,7 +47,6 @@ export function useAuditEvents(
 ) {
   return useQuery({
     queryKey: workspaceKeys.audit(workspaceId ?? '', limit),
-    queryFn: () => fetchAuditEvents(workspaceId!, limit),
-    enabled: typeof workspaceId === 'string' && workspaceId.length > 0,
+    queryFn: workspaceId ? () => fetchAuditEvents(workspaceId, limit) : skipToken,
   })
 }

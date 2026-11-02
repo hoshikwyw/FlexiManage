@@ -1,8 +1,6 @@
-import type { PostgrestError } from '@supabase/supabase-js'
+import { NETWORK_ERROR_MESSAGE, isNetworkError, isPostgrestError } from '@/lib/postgrest-errors'
 
-function isPostgrestError(error: unknown): error is PostgrestError {
-  return typeof error === 'object' && error !== null && 'code' in error && 'message' in error
-}
+const GENERIC_PROFILE_ERROR_MESSAGE = 'Your profile could not be saved. Please try again.'
 
 /** Friendly messages for the few failures the profile form can hit. */
 export function getProfileErrorMessage(error: unknown): string {
@@ -15,11 +13,9 @@ export function getProfileErrorMessage(error: unknown): string {
       case '23514': // check_violation
         return 'Check the values and try again.'
       default:
-        return 'Your profile could not be saved. Please try again.'
+        return GENERIC_PROFILE_ERROR_MESSAGE
     }
   }
-  if (error instanceof TypeError && /fetch/i.test(error.message)) {
-    return 'Could not reach the server. Check your connection and try again.'
-  }
-  return 'Your profile could not be saved. Please try again.'
+  if (isNetworkError(error)) return NETWORK_ERROR_MESSAGE
+  return GENERIC_PROFILE_ERROR_MESSAGE
 }

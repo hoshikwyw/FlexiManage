@@ -7,7 +7,12 @@
  *           owner/admin, or admin inviting as owner), 409 conflict (already a member).
  *
  * Idempotent: a pending, unexpired invitation for the same email returns 200 with
- * the existing row instead of creating a duplicate.
+ * the existing row instead of creating a duplicate. The database enforces this too
+ * (partial unique index `invitations_pending_unique` on (workspace_id, lower(email))
+ * where accepted_at is null, migration 003): when two requests race past the lookup,
+ * the loser's insert fails with 23505 and is answered with the winner's row.
+ * Expired pending invitations for the address are deleted first (as the caller,
+ * under RLS; the trigger writes `invitation.revoked`) so they never block a re-invite.
  *
  * Order of operations (agent rule): verify JWT -> load caller's role -> check the
  * business rules -> act. The insert runs through the caller's own client so RLS
@@ -39,6 +44,11 @@ interface InvitationRow {
 
 function toResponse(row: InvitationRow) {
   return { id: row.id, email: row.email, role: row.role, expiresAt: row.expires_at }
+}
+
+/** Escapes LIKE wildcards so `ilike` matches the address literally, case-insensitively. */
+function likeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&')
 }
 
 Deno.serve(
@@ -79,18 +89,34 @@ Deno.serve(
     }
 
     // Pending, unexpired invitation for the same email: return it (idempotent).
-    const { data: pending, error: pendingError } = await admin
+    const now = new Date().toISOString()
+    const findPending = async (): Promise<InvitationRow | undefined> => {
+      const { data, error } = await admin
+        .from('invitations')
+        .select('id, email, role, expires_at')
+        .eq('workspace_id', body.workspaceId)
+        .is('accepted_at', null)
+        .gt('expires_at', now)
+      if (error) throw new AppError(500, 'internal', 'Could not load invitations')
+      return (data ?? []).find((inv: InvitationRow) => inv.email.toLowerCase() === body.email)
+    }
+
+    const existing = await findPending()
+    if (existing) return jsonOk(toResponse(existing), cors)
+
+    // An expired pending invitation would still trip the pending-unique index:
+    // remove it as the caller (RLS: owner/admin may delete; audit: invitation.revoked).
+    const { error: expireError } = await userClient
       .from('invitations')
-      .select('id, email, role, expires_at')
+      .delete()
       .eq('workspace_id', body.workspaceId)
       .is('accepted_at', null)
-      .gt('expires_at', new Date().toISOString())
-    if (pendingError) throw new AppError(500, 'internal', 'Could not load invitations')
-
-    const existing = (pending ?? []).find(
-      (inv: InvitationRow) => inv.email.toLowerCase() === body.email,
-    )
-    if (existing) return jsonOk(toResponse(existing), cors)
+      .lte('expires_at', now)
+      .ilike('email', likeLiteral(body.email))
+    if (expireError) {
+      console.error('[invite-member] expired cleanup failed', expireError.code, expireError.message)
+      throw new AppError(500, 'internal', 'Could not replace the expired invitation')
+    }
 
     // Insert as the caller: RLS re-checks owner/admin, invited_by = auth.uid() and the
     // owner-only rule; the audit trigger writes invitation.created with the caller as actor.
@@ -109,6 +135,16 @@ Deno.serve(
       // 42501 = RLS rejected the row: the role check above and the policy disagree.
       if (insertError.code === '42501') {
         throw new AppError(403, 'forbidden', 'You do not have permission to create this invitation')
+      }
+      // 23505 = a concurrent request created the pending invitation first: return it.
+      if (insertError.code === '23505') {
+        const winner = await findPending()
+        if (winner) return jsonOk(toResponse(winner), cors)
+        throw new AppError(
+          409,
+          'conflict',
+          'An invitation for this email is being processed; try again',
+        )
       }
       console.error('[invite-member] insert failed', insertError.code, insertError.message)
       throw new AppError(500, 'internal', 'Could not create the invitation')

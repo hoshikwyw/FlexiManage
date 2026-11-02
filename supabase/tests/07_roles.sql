@@ -3,6 +3,11 @@
 --   carol  admin of A      dave  member of A
 --   erin, frank, grace     users with no membership (targets)
 --   one pending invitation in A created by alice
+-- Since migration 003 nobody adds members directly: every role gets
+-- "permission denied" on insert into workspace_members (membership comes from
+-- accept_invitation(), covered in 11). Where a later assertion needs erin,
+-- frank or grace as a member, the row is inserted as postgres, standing in for
+-- the security definer path.
 create extension if not exists pgtap with schema extensions;
 
 begin;
@@ -163,18 +168,30 @@ select is(tests.rows_affected(format($sql$update public.workspaces set name = 'W
 select is(tests.rows_affected(format($sql$delete from public.workspaces where id = %L$sql$, tests.ws_a())),
   0, 'admin: cannot delete the workspace');
 
-select is(tests.rows_affected(format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'member')$sql$,
-                                     tests.ws_a(), tests.erin())),
-  1, 'admin: can add a member');
-select is(tests.rows_affected(format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'admin')$sql$,
-                                     tests.ws_a(), tests.frank())),
-  1, 'admin: can add an admin');
+select throws_ok(
+  format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'member')$sql$,
+         tests.ws_a(), tests.erin()),
+  '42501',
+  'permission denied for table workspace_members',
+  'admin: cannot add a member directly (invitation acceptance is the only path)');
+select throws_ok(
+  format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'admin')$sql$,
+         tests.ws_a(), tests.frank()),
+  '42501', null,
+  'admin: cannot add an admin directly');
 select throws_ok(
   format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'owner')$sql$,
          tests.ws_a(), tests.grace()),
   '42501',
-  'new row violates row-level security policy for table "workspace_members"',
+  'permission denied for table workspace_members',
   'admin: cannot add an owner');
+
+-- erin (member) and frank (admin) join through the security definer path.
+select tests.logout();
+insert into public.workspace_members (workspace_id, user_id, role) values
+  (tests.ws_a(), tests.erin(),  'member'),
+  (tests.ws_a(), tests.frank(), 'admin');
+select tests.login_as(tests.carol());
 
 select is(tests.rows_affected(format($sql$update public.workspace_members set role = 'admin' where workspace_id = %L and user_id = %L$sql$,
                                      tests.ws_a(), tests.erin())),
@@ -232,12 +249,25 @@ select is(tests.role_in_a(tests.alice()), 'owner', 'postgres: alice is still own
 -- ---------------------------------------------------------------------------
 select tests.login_as(tests.alice());
 
-select is(tests.rows_affected(format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'owner')$sql$,
-                                     tests.ws_a(), tests.grace())),
-  1, 'owner: can add an owner');
-select is(tests.rows_affected(format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'member')$sql$,
-                                     tests.ws_a(), tests.erin())),
-  1, 'owner: can add a member');
+select throws_ok(
+  format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'owner')$sql$,
+         tests.ws_a(), tests.grace()),
+  '42501',
+  'permission denied for table workspace_members',
+  'owner: cannot add an owner directly either');
+select throws_ok(
+  format($sql$insert into public.workspace_members (workspace_id, user_id, role) values (%L, %L, 'member')$sql$,
+         tests.ws_a(), tests.erin()),
+  '42501', null,
+  'owner: cannot add a member directly either');
+
+-- grace (owner) and erin (member) join through the security definer path.
+select tests.logout();
+insert into public.workspace_members (workspace_id, user_id, role) values
+  (tests.ws_a(), tests.grace(), 'owner'),
+  (tests.ws_a(), tests.erin(),  'member');
+select tests.login_as(tests.alice());
+
 select is(tests.rows_affected(format($sql$update public.workspace_members set role = 'admin' where workspace_id = %L and user_id = %L$sql$,
                                      tests.ws_a(), tests.erin())),
   1, 'owner: can change a member''s role');

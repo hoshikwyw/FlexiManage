@@ -19,8 +19,9 @@ import { Input } from '@/components/ui/input'
 import type { Workspace } from '@/types/database'
 
 import { useDeleteWorkspace } from '../api/use-delete-workspace'
+import { useCurrentWorkspace } from '../context/workspace-context'
 import { getWorkspaceErrorMessage } from '../lib/workspace-errors'
-import { WORKSPACE_ROUTES } from '../lib/workspace-routes'
+import { routeAfterLeavingWorkspace } from '../lib/workspace-routes'
 
 /** Owner-only destructive actions. Deleting asks the user to type the workspace name. */
 export function DangerZone({ workspace }: { workspace: Workspace }) {
@@ -56,6 +57,7 @@ function DeleteWorkspaceDialog({
   const inputId = useId()
   const [confirmation, setConfirmation] = useState('')
   const deleteWorkspace = useDeleteWorkspace()
+  const { workspaces } = useCurrentWorkspace()
   const navigate = useNavigate()
   const matches = confirmation.trim() === workspace.name
 
@@ -72,9 +74,11 @@ function DeleteWorkspaceDialog({
     if (!matches) return
     try {
       await deleteWorkspace.mutateAsync(workspace.id)
+      // Leave the deleted workspace's route before the list refetch (started,
+      // not awaited, by the hook) removes it and `WorkspaceRoute` would 404.
+      navigate(routeAfterLeavingWorkspace(workspaces, workspace.id), { replace: true })
       onOpenChange(false)
       toast.success(`Workspace "${workspace.name}" deleted`)
-      navigate(WORKSPACE_ROUTES.root, { replace: true })
     } catch {
       // Rendered from `deleteWorkspace.error`.
     }

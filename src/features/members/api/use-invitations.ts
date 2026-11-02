@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQuery } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 import type { Invitation } from '@/types/database'
@@ -27,7 +27,7 @@ export function isInvitationExpired(invitation: PendingInvitation, now = Date.no
 /**
  * Pending (not yet accepted) invitations of a workspace. Pass `enabled: false`
  * for plain members: RLS would return an empty list anyway and the page hides
- * the section.
+ * the section. A disabled query uses `skipToken` and stays idle.
  */
 export function useInvitations(
   workspaceId: string | null | undefined,
@@ -35,7 +35,6 @@ export function useInvitations(
 ) {
   return useQuery({
     queryKey: memberKeys.invitations(workspaceId ?? ''),
-    queryFn: () => fetchInvitations(workspaceId!),
-    enabled: enabled && typeof workspaceId === 'string' && workspaceId.length > 0,
+    queryFn: enabled && workspaceId ? () => fetchInvitations(workspaceId) : skipToken,
   })
 }
