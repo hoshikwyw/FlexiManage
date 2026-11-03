@@ -143,6 +143,14 @@ Agents: supabase-engineer, frontend-dev, test-engineer.
 - [ ] Billing provider integration per D3, or a manual "contact us" flow for pilots (supabase-engineer).
 - [ ] Audit log page for owners (frontend-dev).
 - [ ] Plan-limit tests and audit event tests (test-engineer).
+- [ ] Platform admin web (added 2026-11-03): operator back-office for the FlexiManage team, separate
+  from workspace admin. Minimal scope: `platform_admins` table and `is_platform_admin()` helper;
+  read policies for platform admins on `workspaces`, `workspace_members`, `subscriptions`,
+  `usage_counters` and `audit_events` across tenants; admin-only Edge Functions for change plan,
+  suspend workspace and support impersonation (every call audited); an `/admin` route group in the
+  app guarded by the platform role (workspace list with usage vs limits, subscription view,
+  cross-tenant audit log). Until it exists, Supabase Studio / the Supabase dashboard is the
+  operator console (supabase-engineer, frontend-dev, security-reviewer).
 
 Exit criteria: exceeding any Free limit fails server-side with a stable error code and the UI explains it.
 
