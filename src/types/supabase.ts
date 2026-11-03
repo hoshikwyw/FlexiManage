@@ -43,6 +43,38 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"field_definitions": {
+                  Row: {
+                    "created_at": string,"id": string,"key": string,"label": string,"module_id": string,"options": NonNullable<Json>,"position": number,"required": boolean,"settings": NonNullable<Json>,"type": Database["public"]['Enums']["field_type"],"updated_at": string,"workspace_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"id"?: string,"key": string,"label": string,"module_id": string,"options"?: NonNullable<Json>,"position"?: number,"required"?: boolean,"settings"?: NonNullable<Json>,"type": Database["public"]['Enums']["field_type"],"updated_at"?: string,"workspace_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"id"?: string,"key"?: string,"label"?: string,"module_id"?: string,"options"?: NonNullable<Json>,"position"?: number,"required"?: boolean,"settings"?: NonNullable<Json>,"type"?: Database["public"]['Enums']["field_type"],"updated_at"?: string,"workspace_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "field_definitions_module_id_fkey"
+      columns: ["module_id"]
+isOneToOne: false
+      referencedRelation: "modules"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "field_definitions_module_workspace_fkey"
+      columns: ["module_id","workspace_id"]
+isOneToOne: false
+      referencedRelation: "modules"
+      referencedColumns: ["id","workspace_id"]
+    },{
+      foreignKeyName: "field_definitions_workspace_id_fkey"
+      columns: ["workspace_id"]
+isOneToOne: false
+      referencedRelation: "workspaces"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"invitations": {
                   Row: {
                     "accepted_at": string | null,"created_at": string,"email": string,"expires_at": string,"id": string,"invited_by": string | null,"role": Database["public"]['Enums']["workspace_role"],"token": string,"workspace_id": string
@@ -63,6 +95,26 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"modules": {
+                  Row: {
+                    "created_at": string,"created_by": string | null,"description": string | null,"icon": string | null,"id": string,"name": string,"position": number,"slug": string,"updated_at": string,"workspace_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"created_by"?: string | null,"description"?: string | null,"icon"?: string | null,"id"?: string,"name": string,"position"?: number,"slug": string,"updated_at"?: string,"workspace_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"created_by"?: string | null,"description"?: string | null,"icon"?: string | null,"id"?: string,"name"?: string,"position"?: number,"slug"?: string,"updated_at"?: string,"workspace_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "modules_workspace_id_fkey"
+      columns: ["workspace_id"]
+isOneToOne: false
+      referencedRelation: "workspaces"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"profiles": {
                   Row: {
                     "avatar_url": string | null,"created_at": string,"email": string,"full_name": string | null,"id": string,"updated_at": string
@@ -76,6 +128,38 @@ isOneToOne: false
                   }
                   Relationships: [
                     
+                  ]
+                },"records": {
+                  Row: {
+                    "created_at": string,"created_by": string | null,"custom_values": NonNullable<Json>,"id": string,"module_id": string,"search_vector": unknown,"status": string | null,"title": string,"updated_at": string,"workspace_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"created_by"?: string | null,"custom_values"?: NonNullable<Json>,"id"?: string,"module_id": string,"search_vector"?: never,"status"?: string | null,"title": string,"updated_at"?: string,"workspace_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"created_by"?: string | null,"custom_values"?: NonNullable<Json>,"id"?: string,"module_id"?: string,"search_vector"?: never,"status"?: string | null,"title"?: string,"updated_at"?: string,"workspace_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "records_module_id_fkey"
+      columns: ["module_id"]
+isOneToOne: false
+      referencedRelation: "modules"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "records_module_workspace_fkey"
+      columns: ["module_id","workspace_id"]
+isOneToOne: false
+      referencedRelation: "modules"
+      referencedColumns: ["id","workspace_id"]
+    },{
+      foreignKeyName: "records_workspace_id_fkey"
+      columns: ["workspace_id"]
+isOneToOne: false
+      referencedRelation: "workspaces"
+      referencedColumns: ["id"]
+    }
                   ]
                 },"workspace_members": {
                   Row: {
@@ -125,18 +209,32 @@ isOneToOne: false
 "current_user_workspace_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
+"field_options_are_valid":
+{ Args: { "p_options": Json,"p_type": Database["public"]['Enums']["field_type"] }; Returns: boolean
+                           },
+"field_settings_are_valid":
+{ Args: { "p_settings": Json,"p_type": Database["public"]['Enums']["field_type"] }; Returns: boolean
+                           },
 "has_workspace_role":
 { Args: { "p_roles": (Database["public"]['Enums']["workspace_role"])[],"p_workspace_id": string }; Returns: boolean
                            },
 "is_workspace_member":
 { Args: { "p_workspace_id": string }; Returns: boolean
                            },
+"jsonb_values_text":
+{ Args: { "p_values": Json }; Returns: string
+                           },
 "shares_workspace_with":
 { Args: { "p_user_id": string }; Returns: boolean
+                           },
+"workspace_usage":
+{ Args: { "p_workspace_id": string }; Returns: {
+              "members": number,"modules": number,"records": number
+            }[]
                            }
           }
           Enums: {
-            "workspace_role": "owner"|"admin"|"member"
+            "field_type": "text"|"number"|"date"|"select"|"checkbox"|"currency","workspace_role": "owner"|"admin"|"member"
           }
           CompositeTypes: {
             [_ in never]: never
@@ -256,7 +354,7 @@ export const Constants = {
           }
         },"public": {
           Enums: {
-            "workspace_role": ["owner", "admin", "member"]
+            "field_type": ["text", "number", "date", "select", "checkbox", "currency"],"workspace_role": ["owner", "admin", "member"]
           }
         }
 } as const

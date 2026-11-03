@@ -1,8 +1,8 @@
 # Operations
 
 Runtime and tooling notes for operators. Updated by the `devops-engineer` and `supabase-engineer`
-agents. Last updated: 2026-11-03 (Database tests: used-database runs, shared helpers, `test:db:fresh`,
-`db:dirty`).
+agents. Last updated: 2026-11-03 (migration 004: test files `13` to `18`, content fixture helpers,
+seed content).
 
 ## Production prerequisites
 
@@ -107,8 +107,12 @@ never collects it. `npm run db:reset` returns to the seed.
 
 Conventions (2026-11-03, Part 8b):
 
-- Files are numbered (`01_rls_enabled.sql` ... `12_review_fixes.sql`) and each wraps everything in
-  `begin; select plan(N); ... select * from finish(); rollback;`, so a run leaves no data behind.
+- Files are numbered (`01_rls_enabled.sql` ... `18_search_and_usage.sql`; 18 files, 681 tests as
+  of migration 004) and each wraps everything in `begin; select plan(N); ... select * from
+  finish(); rollback;`, so a run leaves no data behind. `01` holds the structural totals (table
+  count, function count, grants, policy names) and must be updated by every migration; `13` to
+  `18` cover the content model (isolation of modules, fields and records, custom value
+  validation, role rules and audit, search and `workspace_usage`).
 - The shared helpers live in `supabase/tests/helpers/tests_schema.sql.inc` and are pulled in with
   `\ir helpers/tests_schema.sql.inc` right after `select plan(N)` (psql resolves `\ir` relative to
   the including file, also inside the pg_prove container; the `.sql.inc` extension keeps pg_prove
@@ -117,13 +121,20 @@ Conventions (2026-11-03, Part 8b):
   avatar])`, `role_in(ws, user)`, `token_of(invitation)`, `remember_count` / `recall_count` and
   `remember_text` / `recall_text` (transaction-local `set_config` slots for delta assertions), the
   fixed ids (`alice`, `bob`, `ws_a`, `ws_b`, `carol` ... `grace`) and `assert_seed_invariants()`,
-  which aborts the file with a clear message when the seed invariants below are broken.
+  which aborts the file with a clear message when the seed invariants below are broken. For the
+  content model it adds the fixture ids `mod_a`, `mod_b`, `fld_a1` ... `fld_a6`, `fld_b1`,
+  `rec_a1` ... `rec_a3`, `rec_b1` (all `...c0..`, distinct from the seed ids) and the helpers
+  `create_module(id, ws, slug[, created_by])`, `create_field(id, module, key, type[, required,
+  options, settings, position, ws])`, `create_record(id, module, title[, values, created_by, ws,
+  status])` (all run as the current role, so they go through RLS while impersonating),
+  `module_workspace(module)` and `values_of(record)` (security definer readers).
 - Users are impersonated the way PostgREST does: `set local role authenticated` plus
   `set_config('request.jwt.claims', '{"sub": "<uuid>", "role": "authenticated"}', true)`. Extra
   users and memberships are inserted as `postgres` before impersonating.
 - The only seed facts a test may assume are: workspaces A and B exist, alice owns A and is not a
   member of B, bob owns B and is not a member of A (`supabase/seed.sql`, `tests/fixtures/ids.ts`).
-  Nothing else about the database is assumed. Therefore:
+  Nothing else about the database is assumed, not even the seed module, fields and records of
+  migration 004 (a manual session may have changed or deleted them). Therefore:
   - exact result sets are asserted on fixtures created inside the transaction (new users via
     `tests.create_user()`, new workspaces inserted as the owner so the triggers fire), never on
     seed totals;
@@ -197,7 +208,12 @@ The local anon key is a well-known demo key; the local service-role key still ne
 `.env*` files.
 
 Seed data (`supabase/seed.sql`, ids in `tests/fixtures/ids.ts`): `alice@example.com` owns
-`workspace-a`, `bob@example.com` owns `workspace-b`, both with password `password123`.
+`workspace-a`, `bob@example.com` owns `workspace-b`, both with password `password123`. Since
+migration 004 workspace A also has the module `clients` ("Clients") with the fields `company`
+(text, required), `contact_email` (text), `status` (select lead/active/churned) and `value`
+(currency EUR) and three records (Acme Ltd, Globex Corporation, Initech); workspace B has the
+empty module `projects`. The seed is idempotent (`on conflict (id) do nothing`), so re-applying
+it never duplicates content; the fixed ids are listed in `docs/architecture.md`, "Seed identities".
 `site_url` and the redirect allow-list in `config.toml` point at the Vite dev server
 (`http://localhost:5173`).
 

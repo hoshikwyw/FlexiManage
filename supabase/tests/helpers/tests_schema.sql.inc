@@ -150,3 +150,91 @@ begin
 end;
 $$;
 select tests.assert_seed_invariants();
+
+-- ---------------------------------------------------------------------------
+-- Content fixtures (migration 004). Tests never rely on the seed module,
+-- fields or records; they create their own inside the transaction with the
+-- fixed ids below (distinct from the seed ids 0a0001 / 0b0001 / 0f000N / 0e000N).
+-- ---------------------------------------------------------------------------
+-- Modules created by tests: one in A, one in B.
+create function tests.mod_a() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0a1'::uuid $$;
+create function tests.mod_b() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0b1'::uuid $$;
+-- Fields created by tests (module A unless the name says otherwise).
+create function tests.fld_a1() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0f1'::uuid $$;
+create function tests.fld_a2() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0f2'::uuid $$;
+create function tests.fld_a3() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0f3'::uuid $$;
+create function tests.fld_a4() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0f4'::uuid $$;
+create function tests.fld_a5() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0f5'::uuid $$;
+create function tests.fld_a6() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0f6'::uuid $$;
+create function tests.fld_b1() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0fb'::uuid $$;
+-- Records created by tests.
+create function tests.rec_a1() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0e1'::uuid $$;
+create function tests.rec_a2() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0e2'::uuid $$;
+create function tests.rec_a3() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0e3'::uuid $$;
+create function tests.rec_b1() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-00000000c0eb'::uuid $$;
+
+-- Insert a module as the current role (call as postgres for fixtures, or while
+-- impersonating to go through RLS). created_by defaults to the workspace owner
+-- (alice for A, bob for B) when not given.
+create function tests.create_module(p_id uuid, p_ws uuid, p_slug text, p_created_by uuid default null)
+returns void language plpgsql as $$
+begin
+  insert into public.modules (id, workspace_id, name, slug, created_by)
+  values (p_id, p_ws, initcap(replace(p_slug, '-', ' ')), p_slug,
+          coalesce(p_created_by, case when p_ws = tests.ws_b() then tests.bob() else tests.alice() end));
+end;
+$$;
+
+-- Insert a field definition as the current role. workspace_id is taken from
+-- the module (as postgres) unless p_ws overrides it (to test the composite FK).
+create function tests.create_field(
+  p_id uuid, p_module uuid, p_key text, p_type public.field_type,
+  p_required boolean default false, p_options jsonb default '[]'::jsonb,
+  p_settings jsonb default '{}'::jsonb, p_position integer default 0, p_ws uuid default null
+) returns void language plpgsql as $$
+begin
+  insert into public.field_definitions (id, workspace_id, module_id, key, label, type, required, position, options, settings)
+  values (p_id, coalesce(p_ws, tests.module_workspace(p_module)), p_module, p_key, initcap(replace(p_key, '_', ' ')),
+          p_type, p_required, p_position, p_options, p_settings);
+end;
+$$;
+
+-- Workspace of a module, readable while impersonating.
+create function tests.module_workspace(p_module uuid) returns uuid
+language sql security definer set search_path = '' as $$
+  select m.workspace_id from public.modules m where m.id = p_module
+$$;
+
+-- Insert a record as the current role. created_by defaults to the workspace
+-- owner when not given.
+create function tests.create_record(
+  p_id uuid, p_module uuid, p_title text, p_values jsonb default '{}'::jsonb,
+  p_created_by uuid default null, p_ws uuid default null, p_status text default null
+) returns void language plpgsql as $$
+declare
+  v_ws uuid := coalesce(p_ws, tests.module_workspace(p_module));
+begin
+  insert into public.records (id, workspace_id, module_id, title, status, custom_values, created_by)
+  values (p_id, v_ws, p_module, p_title, p_status, p_values,
+          coalesce(p_created_by, case when v_ws = tests.ws_b() then tests.bob() else tests.alice() end));
+end;
+$$;
+
+-- custom_values of a record, readable while impersonating (for "unchanged" checks).
+create function tests.values_of(p_record uuid) returns jsonb
+language sql security definer set search_path = '' as $$
+  select r.custom_values from public.records r where r.id = p_record
+$$;

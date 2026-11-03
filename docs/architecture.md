@@ -2,9 +2,8 @@
 
 Database and backend reference. Maintained by the `supabase-engineer` agent; every new table,
 function or policy is documented here in the same change that introduces it.
-Last updated: 2026-11-02 (migration 003, the Phase 2 review fixes; see
-[Review fixes](#review-fixes-migration-20261102090000_003_review_fixessql) and
-[Account deletion](#account-deletion)).
+Last updated: 2026-11-03 (migration 004, the content model: see
+[Content model](#content-model-migration-20261103090000_004_modules_recordssql)).
 
 ## Tenancy model
 
@@ -42,6 +41,15 @@ Role capabilities (migrations 001 and 003):
 | Create, list, revoke invitations             |  yes  |  yes  |   no   |
 | Invite as `owner`                            |  yes  |  no   |   no   |
 | Join a workspace (accept an invitation)      | invitee only: `accept_invitation()` | | |
+| Read modules, fields, records (migration 004) |  yes  |  yes  |  yes   |
+| Create, edit, reorder, delete modules        |  yes  |  yes  |   no   |
+| Create, edit, delete field definitions       |  yes  |  yes  |   no   |
+| Create, edit, delete records (any author)    |  yes  |  yes  |  yes   |
+| Call `workspace_usage(workspace_id)`         |  yes  |  yes  |  yes   |
+
+Records are writable by every member, including records created by someone else. This is the MVP
+rule (migration 004): a small team shares one data set, and per-record ownership or a read-only
+role is a Phase 4 decision together with record-level audit.
 
 ## Tables (migration `20261030120000_001_tenancy.sql`, amended by 003)
 
@@ -173,7 +181,7 @@ Append-only log of privileged actions. Clients can read their workspaces' events
 
 Index: `audit_events_workspace_created_idx (workspace_id, created_at desc)`.
 
-Actions and metadata (migrations 001 to 003):
+Actions and metadata (migrations 001 to 004):
 
 | Action                | Written by                                   | `entity_type` / `entity_id`       | `metadata`                                  |
 | --------------------- | -------------------------------------------- | --------------------------------- | ------------------------------------------- |
@@ -184,6 +192,17 @@ Actions and metadata (migrations 001 to 003):
 | `invitation.created`  | `audit_invitation_change()`                  | `invitation` / invitation id      | `{ invitation_id, role }`                   |
 | `invitation.revoked`  | `audit_invitation_change()`                  | `invitation` / invitation id      | `{ invitation_id, role, accepted }`         |
 | `invitation.accepted` | `accept_invitation()`                        | `invitation` / invitation id      | `{ invitation_id, role, already_member }`   |
+| `module.created`      | `audit_module_change()` (004)                | `module` / module id              | `{ name, slug }`                            |
+| `module.updated`      | `audit_module_change()` (004), only when `name` or `slug` changed | `module` / module id | `{ from: { name, slug }, to: { name, slug } }` |
+| `module.deleted`      | `audit_module_change()` (004)                | `module` / module id              | `{ name, slug }`                            |
+| `field.created`       | `audit_field_change()` (004)                 | `field_definition` / field id     | `{ module_id, key, type, label }`           |
+| `field.deleted`       | `audit_field_change()` (004)                 | `field_definition` / field id     | `{ module_id, key, type, label }`           |
+
+Module changes to `position`, `description` or `icon` and field updates (label, required,
+position, options, settings, type) are not audited. Fields removed by a module delete are not
+audited one by one: the single `module.deleted` row stands for them. **Record writes produce no
+audit events** (volume: every edit of every row); whether to log record create/delete, and for
+which plans, is a Phase 4 decision.
 
 Invitation metadata never contains the invitee's email (privacy: the audit log is readable by
 every member) nor the token. Accepting an invitation produces two rows: `member.added` from the
@@ -204,6 +223,17 @@ as a parameter; it always comes from `auth.uid()`.
 | `has_workspace_role(p_workspace_id uuid, p_roles workspace_role[])` | boolean | Caller holds one of the given roles in the workspace.   |
 | `current_user_workspace_ids()`                       | setof uuid   | All workspace ids the caller belongs to.                         |
 | `shares_workspace_with(p_user_id uuid)`              | boolean      | Caller and `p_user_id` share at least one workspace (profiles).  |
+| `workspace_usage(p_workspace_id uuid)` (004)         | one row `(modules int, records int, members int)` | Counts for the usage page and the Phase 4 entitlement check; see [workspace_usage](#workspace_usagep_workspace_id-uuid). |
+
+Pure helpers (migration 004) are `immutable`, not security definer, and keep the default
+`execute` for every role: they are called from check constraints and a generated column, which
+Postgres evaluates with the privileges of the role that writes the row (also `service_role`).
+
+| Function                                                   | Purpose                                                                 |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `jsonb_values_text(jsonb)`                                 | Space-separated text of the top-level string and number values of an object (`''` otherwise). Feeds `records.search_vector`. |
+| `field_options_are_valid(field_type, jsonb)`               | `field_definitions_options_check`: select needs 1..100 `{value, label}` objects with distinct values; other types need `[]`. |
+| `field_settings_are_valid(field_type, jsonb)`              | `field_definitions_settings_check`: object; `currency.currency` is `^[A-Z]{3}$`; `number`/`currency.precision` is an integer 0..6. Unknown keys pass. |
 
 ### `accept_invitation(p_token text)` (migration `20261030150000_002_accept_invitation.sql`)
 
@@ -237,6 +267,11 @@ Trigger functions (not executable by any API role):
 | `protect_last_owner()`           | before update/delete on `workspace_members` | Rejects removing or demoting the last owner; per-workspace advisory lock. Security definer. |
 | `audit_workspace_member_change()`| after insert/update/delete on `workspace_members` | Membership audit events.                     |
 | `audit_invitation_change()`      | after insert/delete on `invitations`      | Invitation audit events (`invitation_id`, `role`; no email). |
+| `validate_record_custom_values()` (004) | before insert, before update of `custom_values`, `module_id` on `records` (`records_validate_custom_values`) | Keys, required fields and value types against the module's `field_definitions`; raises 23514 `custom_values.<key>: <reason>`. Security definer. |
+| `protect_field_definition()` (004) | before update on `field_definitions` (`field_definitions_protect`) | `key` immutable; `type` frozen while values exist; select options in use cannot be removed. Security definer. |
+| `handle_field_deleted()` (004)   | after delete on `field_definitions` (`field_definitions_strip_values`) | Removes the key from `custom_values` of the module's records. Security definer. |
+| `audit_module_change()` (004)    | after insert/update/delete on `modules` (`modules_audit`) | `module.created` / `module.updated` / `module.deleted`. Security definer. |
+| `audit_field_change()` (004)     | after insert/delete on `field_definitions` (`field_definitions_audit`) | `field.created` / `field.deleted`. Security definer. |
 
 ### Account deletion
 
@@ -277,6 +312,16 @@ and no table grant, so it is denied for `authenticated`. `o/a` means owner or ad
 | `workspace_members` | `is_workspace_member(workspace_id)`             | none (`handle_new_workspace()` and `accept_invitation()` only, since 003) | owner; col `role`; last-owner trigger   | self, or owner, or admin when target `role <> 'owner'`; last-owner trigger |
 | `invitations`       | o/a; cols all except `token`                    | o/a; `invited_by = auth.uid()`; `role = 'owner'` only if owner; cols `workspace_id, email, role, invited_by` | none (`accept_invitation()` only) | o/a                                                   |
 | `audit_events`      | `is_workspace_member(workspace_id)`             | none                                                           | none                                                | none                                                                   |
+| `modules` (004)     | `is_workspace_member(workspace_id)`             | o/a; `created_by = auth.uid()`; cols `id, workspace_id, name, slug, description, icon, position, created_by` | o/a; cols `name, slug, description, icon, position` | o/a                                       |
+| `field_definitions` (004) | `is_workspace_member(workspace_id)`       | o/a; cols `id, workspace_id, module_id, key, label, type, required, position, options, settings` | o/a; cols `key, label, type, required, position, options, settings` (triggers guard `key`/`type`) | o/a |
+| `records` (004)     | `is_workspace_member(workspace_id)`             | member; `created_by = auth.uid()`; cols `id, workspace_id, module_id, title, status, custom_values, created_by` | member; cols `title, status, custom_values` | member                              |
+
+For the three content tables insert and update are column-level grants, so `created_at`,
+`updated_at` and `search_vector` can never be supplied, and `workspace_id`, `module_id` and
+`created_by` can never be changed after insert (`42501 permission denied for table ...`).
+`search_vector` is a generated column: a value for it fails with `428C9` even before the grant is
+consulted. `created_by` defaults to `auth.uid()`, so clients may omit it; supplying someone else
+is an RLS violation (`42501 new row violates row-level security policy`).
 
 Policy names (`workspace_members_insert_owner_admin` was dropped in migration 003):
 
@@ -288,6 +333,12 @@ workspace_members_select_member            workspace_members_update_owner
 workspace_members_delete_owner_admin_or_self
 invitations_select_owner_admin             invitations_insert_owner_admin
 invitations_delete_owner_admin             audit_events_select_member
+modules_select_member                      modules_insert_owner_admin
+modules_update_owner_admin                 modules_delete_owner_admin
+field_definitions_select_member            field_definitions_insert_owner_admin
+field_definitions_update_owner_admin       field_definitions_delete_owner_admin
+records_select_member                      records_insert_member
+records_update_member                      records_delete_member
 ```
 
 ## Review fixes (migration `20261102090000_003_review_fixes.sql`)
@@ -305,6 +356,160 @@ Applied 2026-11-02 after review round 1 of Phase 2. Each item is a `create or re
 | 6 | `profiles.email` went stale after an email change; unbounded `full_name` at signup | `handle_user_email_changed()`; `left(full_name, 100)`                             |
 | 7 | No bounds on `profiles.full_name` / `avatar_url`              | Named check constraints                                                                              |
 | 8 | Invitee emails in a log readable by every member              | Invitation audit metadata is `{ invitation_id, role, ... }`                                          |
+
+## Content model (migration `20261103090000_004_modules_records.sql`)
+
+Applied 2026-11-03 (Part 10). A **module** is an entity type inside a workspace ("Clients",
+"Projects"); its **field definitions** describe the custom columns; a **record** is one row with a
+structured core (`title`, `status`) and a `custom_values` JSON object keyed by field key. Every
+table carries `workspace_id`; `field_definitions` and `records` also carry `module_id`, and the
+pair `(module_id, workspace_id)` is a composite foreign key to `modules (id, workspace_id)`
+(`field_definitions_module_workspace_fkey`, `records_module_workspace_fkey`). A row therefore can
+never point at a module of another workspace even if its `workspace_id` passes RLS: the insert
+fails with `23503`. Deleting a module cascades its fields and records; deleting a workspace
+cascades everything. Attachments and the storage bucket are Part 13; plan limits are Phase 4
+(`workspace_usage()` below is the hook).
+
+Enum `public.field_type`: `text`, `number`, `date`, `select`, `checkbox`, `currency`.
+
+### `modules`
+
+| Column         | Type        | Notes                                                                       |
+| -------------- | ----------- | --------------------------------------------------------------------------- |
+| `id`           | uuid PK     | default `gen_random_uuid()`; clients may supply it                          |
+| `workspace_id` | uuid        | not null, `references workspaces on delete cascade`; `modules_workspace_id_idx` |
+| `name`         | text        | not null, 1..100 chars                                                      |
+| `slug`         | text        | not null, `^[a-z0-9]+(-[a-z0-9]+)*$`, 1..60; unique per workspace (`23505` on duplicate; the same slug may exist in another workspace) |
+| `description`  | text        | null or <= 500 chars                                                        |
+| `icon`         | text        | null or <= 50 chars (icon name chosen by the UI)                            |
+| `position`     | integer     | not null, default 0; the client orders, no server renumbering               |
+| `created_by`   | uuid        | default `auth.uid()`, `references auth.users on delete set null`; must equal the caller |
+| `created_at`, `updated_at` | timestamptz | `updated_at` maintained by `set_updated_at()`                   |
+
+Unique `(workspace_id, slug)` and unique `(id, workspace_id)` (target of the composite FKs).
+
+### `field_definitions`
+
+| Column         | Type         | Notes                                                                       |
+| -------------- | ------------ | --------------------------------------------------------------------------- |
+| `id`           | uuid PK      |                                                                             |
+| `workspace_id` | uuid         | not null, `references workspaces on delete cascade`; `field_definitions_workspace_id_idx` |
+| `module_id`    | uuid         | not null, `references modules on delete cascade`; `(module_id, workspace_id)` composite FK |
+| `key`          | text         | not null, `^[a-z][a-z0-9_]{0,49}$`, unique per module; **immutable** (`23514 field_definitions.key: cannot be changed`) |
+| `label`        | text         | not null, 1..100                                                            |
+| `type`         | `field_type` | not null; frozen while any record holds a non-null value (see guards)       |
+| `required`     | boolean      | not null, default false                                                     |
+| `position`     | integer      | not null, default 0; `field_definitions_module_position_idx (module_id, position)` |
+| `options`      | jsonb        | not null, default `[]`; `field_definitions_options_check` (see shapes)      |
+| `settings`     | jsonb        | not null, default `{}`; `field_definitions_settings_check`                  |
+| `created_at`, `updated_at` | timestamptz |                                                                 |
+
+JSON shapes:
+
+- `options` for `select`: `[{ "value": "lead", "label": "Lead" }, ...]`, 1..100 entries, `value`
+  and `label` strings of 1..100 chars, values distinct. Every other type: exactly `[]`. Violations
+  are `23514` with constraint `field_definitions_options_check`.
+- `settings`: always an object. `currency`: optional `"currency": "EUR"` (`^[A-Z]{3}$`).
+  `number` and `currency`: optional `"precision": 2` (integer 0..6). Unknown keys are kept.
+  Violations are `23514` with constraint `field_definitions_settings_check`.
+
+### `records`
+
+| Column          | Type        | Notes                                                                       |
+| --------------- | ----------- | --------------------------------------------------------------------------- |
+| `id`            | uuid PK     |                                                                             |
+| `workspace_id`  | uuid        | not null, `references workspaces on delete cascade`                         |
+| `module_id`     | uuid        | not null, `references modules on delete cascade`; composite FK with `workspace_id` |
+| `title`         | text        | not null, 1..200                                                            |
+| `status`        | text        | null or <= 50 chars; free text in the MVP (a module-level status list is a later decision) |
+| `custom_values` | jsonb       | not null, default `{}`; `{ "<field key>": value }`, validated by trigger    |
+| `search_vector` | tsvector    | generated always as `to_tsvector('simple', title || ' ' || status || ' ' || jsonb_values_text(custom_values))` stored; read-only |
+| `created_by`    | uuid        | default `auth.uid()`, `references auth.users on delete set null`            |
+| `created_at`, `updated_at` | timestamptz |                                                                  |
+
+Indexes: `records_workspace_module_created_idx (workspace_id, module_id, created_at desc)` for
+listing, `records_search_vector_idx` (GIN) for full-text search, `records_custom_values_idx` (GIN
+`jsonb_path_ops`) for `custom_values @> '{"status": "active"}'` filters, `records_title_trgm_idx`
+(GIN `gin_trgm_ops`, extension `pg_trgm` in schema `extensions`) for `title ilike '%...%'`.
+
+Search contract: `search_vector @@ to_tsquery('simple', 'acme:*')` (prefix) or
+`plainto_tsquery('simple', 'yak inc')` (all words). The `simple` configuration does no stemming
+and no stop words, so it is language-neutral. Booleans, nested objects and arrays in
+`custom_values` are not indexed; numbers are indexed as their text (`4200`). Through PostgREST:
+`.textSearch('search_vector', 'acme:*', { config: 'simple' })` or `.ilike('title', '%acme%')`,
+always with `.eq('workspace_id', id)` (RLS enforces it anyway).
+
+### Custom value validation (`validate_record_custom_values()`)
+
+Runs before insert and before an update that sets `custom_values` or `module_id`. It reads the
+module's `field_definitions` and raises SQLSTATE `23514` (`check_violation`) with exactly one of
+these messages (first failure wins: object shape, then unknown keys in alphabetical order, then
+the fields by `position`, each checking required before type):
+
+| Message                                                | When                                                                          |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `custom_values: expected object`                       | `custom_values` is not a JSON object                                          |
+| `custom_values.<key>: unknown field`                   | key is not a field of the module (never silently dropped)                     |
+| `custom_values.<key>: required`                       | required field absent, `null` or `""`                                         |
+| `custom_values.<key>: expected string`                 | `text` or `select` value is not a JSON string                                 |
+| `custom_values.<key>: text longer than 2000 characters` | `text` value longer than 2000 chars                                          |
+| `custom_values.<key>: expected number`                 | `number` or `currency` value is not a JSON number                             |
+| `custom_values.<key>: expected date YYYY-MM-DD`        | `date` value is not a string matching `^\d{4}-\d{2}-\d{2}$` that casts to a date |
+| `custom_values.<key>: expected boolean`                | `checkbox` value is not a JSON boolean                                        |
+| `custom_values.<key>: not one of the options`          | `select` value is not one of `options[].value` (case-sensitive)              |
+
+Rules: `null` (or absence) is accepted for a non-required field of any type and means "no
+value"; values are stored as given (nulls are kept). A required `checkbox` accepts `false`.
+Clients map the message with the regex `^custom_values(?:\.([a-z0-9_]+))?: (.+)$` (group 1 = field
+key or none, group 2 = reason) and show it on the matching form field. The error also carries
+`column = 'custom_values'` in the PostgREST `details`.
+
+Nested invocations are skipped (`pg_trigger_depth() > 1`); the only nested caller is
+`handle_field_deleted()` below.
+
+### Field definition guards
+
+`protect_field_definition()` (before update) raises `23514`:
+
+| Message                                                                        | When                                                                   |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `field_definitions.key: cannot be changed`                                     | `key` differs from the stored one (delete and recreate instead)        |
+| `field_definitions.type: cannot be changed while records have a value for "<key>"` | `type` changes and any record of the module has a non-null value under the key |
+| `field_definitions.options: option "<value>" is still used by records`         | `select` options change and a record holds a value that is no longer an option |
+
+Allowed without a guard: changing `type` when every record has the key absent or `null`; adding
+options; relabelling options; flipping `required` (both ways); every `label`, `position` and
+`settings` change. Turning `required` on (or inserting a required field) while records lack the
+value leaves those records **stale**: a title-only or status-only update still works, the next
+update of `custom_values` (and every new record) must supply the value and otherwise gets
+`custom_values.<key>: required`. The UI should prompt for the missing value when it opens such a
+record. Changing `type` to `select` needs `options` in the same statement (otherwise
+`field_definitions_options_check` fails).
+
+`handle_field_deleted()` (after delete) runs `update records set custom_values = custom_values -
+<key>` for the module's records that hold the key, so records never carry a key without a
+definition and `custom_values.<key>: unknown field` is raised for later writes. The nested update
+skips validation (so a stale record does not block the delete) and moves the affected records'
+`updated_at`. During a module or workspace cascade the trigger does nothing.
+
+### `workspace_usage(p_workspace_id uuid)`
+
+`security definer`, `stable`, `set search_path = ''`, executable by `authenticated` only. Returns
+one row `(modules integer, records integer, members integer)` for the workspace, counting every
+module, every record and every membership regardless of role. A caller who is not a member of the
+workspace (including an unknown id, so existence is not revealed, and a call without a JWT) gets
+SQLSTATE `42501` `not a member of this workspace`; `anon` gets `42501 permission denied for
+function workspace_usage`. Through PostgREST: `supabase.rpc('workspace_usage', { p_workspace_id })`
+returns `{ modules, records, members }[]` with one element. Phase 4's entitlement check will call
+it inside the same transaction as the insert; the usage page reads it directly, so both see the
+same numbers.
+
+### Not decided yet (Phase 4)
+
+- Record-level audit (`record.created` / `record.deleted`) and per-record ownership or a read-only
+  role; today every member writes every record and nothing is logged.
+- A module-level status list for `records.status` (free text today).
+- Enforcing module and record limits before insert (`check_entitlement` with `workspace_usage`).
 
 ## RLS recursion note
 
@@ -329,6 +534,24 @@ definer function.
 Alice is not a member of B and Bob is not a member of A. The seed inserts `auth.users` and
 `auth.identities` directly (local only), and inserts the workspaces with `created_by` set so the
 `on_workspace_created` trigger produces the memberships and audit rows.
+
+Content (migration 004; `SEED_MODULES`, `SEED_FIELDS`, `SEED_RECORDS` in `tests/fixtures/ids.ts`):
+
+| Entity                         | Id                                     | Details                                                        |
+| ------------------------------ | -------------------------------------- | -------------------------------------------------------------- |
+| Module Clients (A)             | `00000000-0000-0000-0000-0000000a0001` | slug `clients`, icon `building-2`, created by alice            |
+| Field `company`                | `00000000-0000-0000-0000-0000000f0001` | text, required, position 0                                     |
+| Field `contact_email`          | `00000000-0000-0000-0000-0000000f0002` | text, position 1                                               |
+| Field `status`                 | `00000000-0000-0000-0000-0000000f0003` | select `lead` / `active` / `churned`, position 2               |
+| Field `value`                  | `00000000-0000-0000-0000-0000000f0004` | currency, settings `{ "currency": "EUR", "precision": 2 }`, position 3 |
+| Record Acme Ltd                | `00000000-0000-0000-0000-0000000e0001` | status `active`, all four values                               |
+| Record Globex Corporation      | `00000000-0000-0000-0000-0000000e0002` | status `lead`, no `value`                                      |
+| Record Initech                 | `00000000-0000-0000-0000-0000000e0003` | status `churned`, `value` 0, no `contact_email`                |
+| Module Projects (B)            | `00000000-0000-0000-0000-0000000b0001` | slug `projects`, no fields, no records, created by bob         |
+
+The pgTAP tests never rely on these rows (only on the four tenancy facts above); they create
+their own modules, fields and records under the `tests.mod_*`, `tests.fld_*` and `tests.rec_*`
+ids (`...c0a1`, `...c0f1`, `...c0e1`, ...), which must not be used by manual testing.
 
 ## Edge Functions (`supabase/functions`)
 
@@ -483,7 +706,9 @@ src/lib/supabase.ts    createClient<Database>(anon key, PKCE, detectSessionInUrl
 src/lib/               format.ts (formatDate/formatDateTime), postgrest-errors.ts
                        (isPostgrestError, isNetworkError), workspace-roles.ts (getRoleLabel)
 src/types/database.ts  Row aliases: Profile, Workspace, WorkspaceMember, Invitation, AuditEvent,
-                       WorkspaceRole, WORKSPACE_ROLES
+                       WorkspaceRole, WORKSPACE_ROLES; migration 004: Module, FieldDefinition,
+                       RecordRow (+ Insert/Update), FieldType, FIELD_TYPES, SelectOption,
+                       FieldSettings, WorkspaceUsage
 src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts (auth, from,
                        functions.invoke), workspace-context.tsx (stubbed WorkspaceProvider value),
                        vitest-env.d.ts
@@ -642,6 +867,10 @@ returns nothing for that id either way, so existence is not revealed).
   `docs/PLANNING.md` (invitation email delivery, code-splitting, profile FKs for embedding).
 - Part 8a (done 2026-11-02): migration 003 (review fixes above), `12_review_fixes.sql`, the
   `invite-member` race handling. Suite: 12 files, 380 tests.
-- Phase 3: migration 004 (`modules`, `field_definitions`, `records`, `attachments`) and the
-  `attachments` storage bucket; Edge Function `export-records`.
-- Phase 4: billing tables, `check_entitlement` and `create-workspace`.
+- Part 10 (done 2026-11-03): migration 004 (`modules`, `field_definitions`, `records`, search,
+  `workspace_usage`), tests `13_isolation_modules` through `18_search_and_usage`, seed content.
+  Suite: 18 files, 681 tests, passing on a fresh and on a used database.
+- Phase 3, still open: `attachments` table and storage bucket (Part 13); Edge Function
+  `export-records`.
+- Phase 4: billing tables, `check_entitlement` (on top of `workspace_usage`), `create-workspace`,
+  the record-audit and record-ownership decisions.

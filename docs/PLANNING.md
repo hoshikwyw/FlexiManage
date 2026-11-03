@@ -1,7 +1,7 @@
 # FlexiManage Project Plan
 
 Living plan for the FlexiManage MVP. Source: FlexiManage React + Vite SaaS Plan (October 2026 edition).
-Owner: project lead. Updated by the `product-planner` agent. Last updated: 2026-11-02.
+Owner: project lead. Updated by the `product-planner` agent. Last updated: 2026-11-03.
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done, `[-]` dropped.
 
@@ -35,6 +35,11 @@ paying customers ask for them.
 | D5 | Hosting provider for the SPA | Cloudflare Pages, Vercel, Netlify | devops-engineer | 2026-11-29 | [ ] |
 | D6 | Workspace isolation acceptance criteria | Written as test cases in section 7 | test-engineer | 2026-11-29 | [ ] |
 
+Recommendation for D1 (prepared 2026-11-03, not the decision): accommodation operators with 3 to 20
+rooms, workflow "housekeeping turnover tracking", default module "Housekeeping tasks". Scoring and
+fallback in `docs/product/segment-comparison.md`; outreach, script and pilot offer in
+`docs/product/discovery-kit.md`.
+
 Recommendation for D2: custom fields only. User-created tables and relationships roughly double the schema,
 RLS and UI work and are the first step toward the deferred visual builder.
 
@@ -52,6 +57,7 @@ Dates assume a start on Monday 2026-11-02 and follow the 90-day roadmap from the
 - [ ] Collect at least 3 examples of current spreadsheets or manual processes.
 - [ ] Write the top workflow as a one-page description with success criteria.
 - [ ] Record decision D1 in the Decision Log.
+- [x] Recommendation prepared 2026-11-03: see `docs/product/segment-comparison.md`; D1 decision still owned by the project lead, due 2026-11-15.
 
 Exit criteria: D1 decided; workflow description approved by the project lead.
 
@@ -117,15 +123,16 @@ Follow-ups from Phase 2 (scheduled in Phase 4 unless noted):
 
 Agents: supabase-engineer, frontend-dev, test-engineer, code-reviewer.
 
-- [ ] Migration 004 (001 tenancy, 002 `accept_invitation`, 003 review fixes are taken): `modules`, `field_definitions`, `records` (structured core + `custom_values jsonb`), `attachments` with RLS (supabase-engineer).
+- [x] Migration 004 (done 2026-11-03): `modules`, `field_definitions`, `records` (structured core + `custom_values jsonb`) with RLS, validation and audit (supabase-engineer). `attachments` moves to the storage migration below.
 - [ ] Storage bucket `attachments` with path policy `{workspace_id}/{record_id}/{file}` (supabase-engineer).
-- [ ] Full-text or trigram search on records scoped by workspace (supabase-engineer).
+- [x] (done 2026-11-03) Full-text and trigram search on records scoped by workspace (supabase-engineer).
 - [ ] Field-type registry: text, number, date, select, checkbox, currency (frontend-dev).
 - [ ] Module settings page: define fields, order, required flag (frontend-dev).
 - [ ] Records table with sorting, filters, pagination and search (frontend-dev).
 - [ ] Record create and edit form generated from field definitions (frontend-dev).
 - [ ] Attachment upload and download on a record (frontend-dev).
 - [ ] CSV export via Edge Function `export-records` with audit event (supabase-engineer).
+- [ ] Module templates (added 2026-11-03, Epic B6): templates shipped as code under `src/features/modules`, "Blank" and the D1 default module; "start from a template" on an empty workspace; atomic create of module plus fields (frontend-dev, supabase-engineer).
 - [ ] Unit tests for field registry and Zod schema generation; component tests for form and table (test-engineer).
 - [ ] Playwright primary journey (test-engineer).
 - [ ] Code review of each feature before merge (code-reviewer).
@@ -227,7 +234,8 @@ CLAUDE.md
 
 ## 6. MVP user stories and acceptance criteria
 
-To be completed in Phase 1 once D1 is decided. Skeleton below; the product-planner agent fills it in.
+Skeleton written 2026-10-30; Epic B filled in 2026-11-03 (segment-agnostic, only the B6 template
+depends on D1). Epics A and C are completed in Phase 1 by the product-planner agent.
 
 ### Epic A: Accounts and workspaces
 - **A1** As a visitor I can sign up with email and password and verify my email.
@@ -236,12 +244,270 @@ To be completed in Phase 1 once D1 is decided. Skeleton below; the product-plann
 - **A4** As a member I cannot see or act on any workspace I do not belong to.
   - Given a user in Workspace A, when they request any record, module, member or file of Workspace B by id or URL, then the response contains zero rows or a 403, and nothing is changed.
 
-### Epic B: Modules and records (depends on D1 workflow)
-- **B1** As an admin I can create a module and define its fields.
-- **B2** As a member I can create, edit, view and delete records in a module.
-- **B3** As a member I can search, filter, sort and page through records.
-- **B4** As a member I can attach and download files on a record.
-- **B5** As an admin I can export a module's records to CSV.
+### Epic B: Modules and records
+
+Written 2026-11-03. The stories describe a generic records workflow that works for any D1 segment;
+the segment only changes the template seeded in B6. Conventions that apply to every story:
+
+- **Roles.** Defining modules and fields (B1, B6) and exporting (B5) are owner/admin actions.
+  Working with records and attachments (B2 to B4) is open to every role, including `member`.
+  Per-record ownership ("only the author may edit") is deferred.
+- **Field types.** Exactly six: `text`, `number`, `date`, `select`, `checkbox`, `currency`. No
+  relation, lookup, user, file, formula or multi-select type (see the scope note after B6).
+- **Workspace isolation.** `modules`, `field_definitions`, `records` and `attachments` carry
+  `workspace_id` and get one policy per command built on `is_workspace_member` /
+  `has_workspace_role`, plus the four denial tests in section 7 (test-engineer). Storage object
+  paths start with `{workspace_id}/`. TanStack Query keys start with `workspaceId`. Unknown ids in
+  another workspace behave exactly like non-existent ids (zero rows or 403), never 404 with detail.
+- **Plan limits.** Phase 4 meters `modules` (per workspace), `records` (per workspace across all
+  modules), `storage_bytes` and `attachments` (per workspace) and `members`. Phase 3 does not enforce
+  them, but every creation in this epic goes through exactly one insert path (a table insert, one
+  SQL function or one Edge Function) so `check_entitlement` can be attached in migration 005 without
+  changing the UI. Field definitions and select options are not metered by plan; they get fixed
+  caps (hypothesis: 50 fields per module, 30 options per select field) enforced in the database.
+  Every quota figure in this epic is a hypothesis until Phase 6.
+- **Routes (proposal for frontend-dev, extends the route map in `docs/architecture.md`).**
+  `/w/:workspaceId/modules/new`, `/w/:workspaceId/modules/:moduleId` (records table),
+  `/w/:workspaceId/modules/:moduleId/settings` (fields), `/w/:workspaceId/modules/:moduleId/records/new`,
+  `/w/:workspaceId/modules/:moduleId/records/:recordId`.
+- **Agents.** Schema, policies, SQL functions, storage and `export-records`: supabase-engineer.
+  Field-type registry, Zod generation, pages: frontend-dev. Denial tests, unit and component tests,
+  Playwright journey: test-engineer. No code is written in this document.
+
+#### B1 Create a module and define its fields
+
+As an owner or admin I can create a module with a name and define its fields (label, type, required
+flag, order, select options) so my team records exactly the data our workflow needs.
+
+Acceptance criteria
+- Given I am an owner or admin of workspace A, when I create a module named "Housekeeping tasks",
+  then the module exists in A with my user as creator, appears in A's sidebar, and the empty records
+  page for it opens.
+- Given I am a `member` of A, when I try to create, rename or delete a module or change its fields
+  through the UI or a direct API call, then the UI shows no such controls and the database denies
+  the command (zero rows affected or a policy error).
+- Given a module, when I add a field, then I must enter a label (1 to 60 characters) and pick one of
+  the six MVP types; the required flag defaults to off; the field receives the next position; a
+  stable key is generated from the label, is unique within the module and never changes afterwards.
+- Given a `select` field, when I define its options, then I must enter 1 to 30 (hypothesis) distinct
+  non-empty labels with an order; renaming an option keeps existing records valid (they store the
+  option key, not the label); removing an option keeps the stored value on existing records, shows it
+  as "(removed option)" in forms and tables, and the next save of such a record requires a current
+  option when the field is required.
+- Given several fields, when I drag or move one to a new position, then the order is persisted and
+  used identically by the record form (B2), the records table (B3) and the CSV export (B5).
+- Given a field with records, when I try to change its type, then the UI does not offer it and the
+  database rejects it; the documented path is to delete the field and create a new one.
+- Given I delete a field, then it disappears from forms, tables, filters and exports; values already
+  stored under its key remain in `custom_values` but are ignored (no data destruction, rule 9).
+- Given I add a required field to a module that already has records, then existing records remain
+  readable and listable; the requirement is enforced on their next edit.
+- Given a module name, when I save, then names are unique per workspace (case-insensitive, trimmed)
+  and a duplicate shows a field-level error.
+- Given a module with records, when I delete it, then I must type its name to confirm; the module,
+  its field definitions, records and attachments (rows and storage objects) are removed and a
+  `module.deleted` audit event with `{ name, record_count }` is written. Because storage objects
+  must be removed as well, deletion runs through one trusted path (Edge Function or SQL function
+  plus storage cleanup; supabase-engineer decides and documents it in `docs/architecture.md`).
+- Given a module already has 50 fields (hypothesis cap), when I add another, then the database
+  rejects it with a stable error code and the UI explains the cap.
+
+Workspace isolation: `modules` and `field_definitions` carry `workspace_id`; select requires
+`is_workspace_member`, insert/update/delete require `has_workspace_role(owner, admin)`; a
+`field_definitions` row must reference a module in the same workspace (enforced by constraint or
+trigger, tested). Module names are unique per workspace, not globally, so a name collision never
+reveals another tenant's modules.
+
+Plan limits: each module counts 1 toward `modules` (Free hypothesis: 1, Pro 5, Business 20).
+Field definitions and options are capped, not metered. Deleting a module decrements `modules` and
+`records` counters by the deleted amounts in Phase 4.
+
+#### B2 Create, view, edit and delete records with validated custom values
+
+As a member I can create, view, edit and delete records in a module through a form generated from
+its field definitions, and every value is validated against those definitions on the server.
+
+Acceptance criteria
+- Given a module with fields, when I open "New record", then the form shows one input per field in
+  module order using the field-type registry (text input, number input, date picker, select,
+  checkbox, currency input with two decimals), marks required fields, and validates with a Zod schema
+  generated from the same definitions before submitting.
+- Given I submit a record, when the server receives `custom_values`, then it rejects unknown keys,
+  values of the wrong type (number and currency: finite decimal, currency with at most 2 fraction
+  digits; date: `YYYY-MM-DD`; select: a current option key; checkbox: boolean; text: string of at
+  most 2,000 characters, hypothesis) and missing required values, with a stable error code and the
+  offending field key; the UI maps it to a field-level error. Validation runs in Postgres so direct
+  API calls cannot bypass it (rule 2). The exact storage representation of currency is chosen by
+  supabase-engineer and documented in `docs/architecture.md`.
+- Given a saved record, when I open it, then I see every field in order with type-appropriate
+  formatting, plus created by, created at and updated at.
+- Given a saved record, when I edit it and save, then only changed values are validated and written,
+  `updated_at` changes, and the detail view and table refresh (query invalidation scoped by
+  workspace and module). Concurrent edits are last-write-wins in the MVP.
+- Given a record, when I delete it, then I confirm once, the record and its attachment rows are
+  removed, the storage objects under its prefix are deleted by the same path, and the table refreshes.
+  Record deletion is not written to `audit_events` in the MVP (high volume, readable by all members);
+  soft delete and a trash view are deferred.
+- Given the first field of the module (by order), then its value is the record's label in lists,
+  breadcrumbs and attachment dialogs; if it is empty, the label falls back to a short id.
+- Given a module with no fields, when a member opens "New record", then the form explains that an
+  admin must define fields first and shows no submit button.
+
+Workspace isolation: `records` carry `workspace_id` and `module_id`; all four commands require
+`is_workspace_member(workspace_id)`; a record's module must belong to the same workspace (constraint
+or trigger, tested). A user of workspace A requesting a record id from workspace B receives zero
+rows, including through the detail route, which then shows the generic not-found page.
+
+Plan limits: each record counts 1 toward `records` across all modules of the workspace (Free
+hypothesis: 200, Pro 5,000, Business 50,000). Deleting decrements. Over the limit, reads, edits and
+deletes keep working; only creation fails (rule 9, Epic C2).
+
+#### B3 Search, filter, sort and paginate records
+
+As a member I can find records quickly in a module with search, per-field filters, sorting and
+pagination, all executed on the server and scoped to my workspace.
+
+Acceptance criteria
+- Given a module with more than 25 records, when I open it, then I see 25 rows (page size options 25,
+  50, 100), a "x to y of N" indicator and next/previous controls; paging, sort and filters are stored
+  in the URL search parameters so a view can be shared with another member of the same workspace.
+- Given the table, when I click a column header, then rows sort by that field server-side with
+  type-aware ordering (text and select alphabetically by label, number and currency numerically, date
+  chronologically, checkbox false before true) and `created_at` / `updated_at` are sortable too;
+  default sort is `updated_at` descending.
+- Given a field type, when I add a filter, then I get: text contains (case-insensitive); number,
+  currency and date between min and max (either side optional); select one or more options; checkbox
+  true or false. Multiple filters combine with AND; the active filter count is shown and all can be
+  cleared at once.
+- Given a search box, when I type at least 2 characters, then results match text and select values
+  across all fields of the module (trigram or full-text index on `records`, scoped by workspace and
+  module), debounced, combined with active filters; for 5,000 records (Pro hypothesis) the first page
+  returns within 1 second on the local stack.
+- Given filters that match nothing, then the table shows an explicit empty state with a "clear
+  filters" action, distinct from the "no records yet" empty state.
+- Given a user who is not a member of the workspace, when they call the same list, count or search
+  query with that workspace id, then both the rows and the count are zero.
+
+Workspace isolation: list, count and search queries are all plain selects on `records` under RLS;
+no view, RPC or index bypasses it. If search is implemented as a SQL function, it is `security
+invoker` so the policies still apply. Saved views, cross-module search and sharing links outside
+the workspace are deferred.
+
+Plan limits: none consumed. Page size is capped at 100 server-side so a client cannot pull a whole
+module in one request; bulk access is the export in B5.
+
+#### B4 Attach and download files on a record
+
+As a member I can attach files to a record and download them, and no file is reachable from
+another workspace.
+
+Acceptance criteria
+- Given a record, when I upload a file, then the client first inserts an `attachments` row
+  (`workspace_id`, `record_id`, file name, size, MIME type, uploader) and only then uploads to the
+  `attachments` bucket at `{workspace_id}/{record_id}/{attachment_id}-{sanitised file name}`; if the
+  upload fails the row is removed; if the row insert fails nothing is uploaded. This ordering gives
+  Phase 4 a single insert to attach `check_entitlement` to.
+- Given a file over 10 MB (hypothesis), or a MIME type outside the allow list (hypothesis: pdf, png,
+  jpg, jpeg, webp, heic, csv, xlsx, docx), or an 11th file on one record (hypothesis cap 10), then the
+  upload is refused by the bucket configuration or policy, not only by the UI, with a clear message.
+- Given attachments on a record, when I view the record, then I see name, size, uploader and date,
+  and downloading uses a short-lived signed URL (60 seconds, hypothesis) or an authenticated download;
+  the bucket is private and no public URL exists.
+- Given I am a member, when I delete an attachment, then the storage object is removed and then the
+  row; the record stays.
+- Given a user in workspace A, when they request `GET` or signed-URL creation for any path under
+  `{workspace B id}/...`, or try to upload under that prefix, then storage returns 403 or an empty
+  result, and nothing is written.
+- Given a record is deleted (B2), then its attachment rows cascade and its storage prefix is deleted
+  by the same path; a scheduled cleanup of orphaned objects is a Phase 5 operations task.
+
+Workspace isolation: `attachments` rows carry `workspace_id`; the storage policies check that the
+first path segment is a workspace the caller belongs to (`is_workspace_member`) for select, insert
+and delete, and that the record in the second segment belongs to that workspace. Both the table and
+the bucket get the four denial tests in section 7 ("attachments (table and storage)").
+
+Plan limits: each upload adds its size to `storage_bytes` (Free hypothesis: 50 MB, Pro 1 GB,
+Business 10 GB) and 1 to `attachments`; deletes subtract. Over the storage limit, downloads keep
+working and only new uploads fail.
+
+#### B5 Export a module's records to CSV
+
+As an owner or admin I can export a module's records (optionally the currently filtered set) to a
+CSV file, and the export is audited.
+
+Acceptance criteria
+- Given I am an owner or admin, when I click "Export CSV" on a module, then the client calls the
+  Edge Function `export-records` with the workspace id, module id and the active filters, and
+  receives `text/csv; charset=utf-8` with a UTF-8 BOM named `{module-slug}-{YYYY-MM-DD}.csv`.
+- Given the CSV, then the header is `id`, `created_at`, `updated_at`, `created_by` (display name,
+  not email) followed by the field labels in module order; deleted fields are not included; values
+  are formatted as: date `YYYY-MM-DD`, checkbox `true`/`false`, select the current option label (or
+  the stored key when the option was removed), number and currency plain decimals with a dot, text
+  raw. Quoting follows RFC 4180.
+- Given a cell that starts with `=`, `+`, `-`, `@`, tab or carriage return, then it is prefixed with
+  a single quote so spreadsheet applications do not execute it (CSV injection).
+- Given the function is called by a `member`, by a non-member, or with a module id from another
+  workspace, then it returns 403 `forbidden` (one code, so module existence is not revealed) and
+  writes nothing.
+- Given a successful export, then an audit event `records.exported` is written with
+  `{ module_id, row_count, filtered: boolean }` and no record content.
+- Given a module with more than 50,000 rows (hypothesis, the Business record ceiling), then the
+  function returns a stable `export_too_large` error and the UI asks the user to filter; rate limiting
+  of exports is Phase 5.
+- Given a Free workspace, then export is still available: data portability is never a paid feature
+  (rule 9 and the pilot promise in `docs/product/discovery-kit.md`).
+
+Workspace isolation: the function verifies the JWT, loads the caller's role in the target workspace,
+reads records with the service role only after that check and only with `workspace_id` and
+`module_id` bound in the query; section 7 lists the 403 cases to verify by HTTP.
+
+Plan limits: exports are not metered in the MVP. The row cap is a safety limit, not an entitlement.
+
+#### B6 Start a module from a template
+
+As an owner or admin of a workspace with no modules I can create my first module from a template
+so the recommended workflow is set up in one step; the default template is the D1 module.
+
+Acceptance criteria
+- Given templates are shipped as versioned code inside the frontend domain module (not as database
+  rows), then the MVP ships two: "Blank" (no fields) and the D1 default. Until D1 is decided the
+  default is "Housekeeping tasks" with the 8 fields in `docs/product/segment-comparison.md` (Room
+  select required; Due date date required; Task type select required; Status select required;
+  Assigned to text; Guests arriving number; Notes text; Inspected checkbox). If D1 lands elsewhere,
+  only this template changes.
+- Given I am an owner or admin and the workspace has zero modules, when I open the dashboard, then I
+  see "Start from a template" with each template's name, description and a read-only preview of its
+  fields, plus "Blank module".
+- Given I pick a template, when I confirm (the module name is prefilled and editable), then the
+  module and all its fields and options are created atomically in one SQL function or Edge Function
+  (the same path B1 uses to create a module with fields), in a single transaction, so a partially
+  applied template never exists.
+- Given the module exists, then it has no live link to the template: later template changes do not
+  alter it, and the user edits fields and options exactly as in B1 (for example renaming the
+  placeholder rooms). A `module.created` audit event with `{ name, template }` records which template
+  was used (`template: null` for manual creation) for pilot analytics.
+- Given a module with the template's name already exists in the workspace, then the name is suffixed
+  "(2)" before saving, or I rename it.
+- Given I am a `member`, then I do not see the template chooser and the creation path denies me as
+  in B1.
+- Given a workspace that already has modules, then the template chooser is still reachable from
+  "New module" and behaves the same.
+
+Workspace isolation: templates are global, read-only and contain no tenant data; applying one writes
+rows only into the caller's workspace through the B1 path, so no new table, policy or storage
+surface is introduced.
+
+Plan limits: applying a template counts as 1 module toward `modules`; it creates no records. On a
+Free workspace (hypothesis: 1 module) the template is therefore the only module, which is the
+intended pilot shape.
+
+**Scope note (relationships stay deferred).** While writing these stories the following would have
+been natural to add and were kept out on purpose, in line with the D2 recommendation and the
+deferred list in section 1: a Rooms or Clients table linked to records (use a `select` or `text`
+field); an "Assigned to" field that references workspace members (use `text`); a relation or
+lookup field type; multi-select; automatic record creation from external calendars or bookings;
+per-record permissions; saved views; soft delete. Any of these moves only when the project lead
+explicitly moves it.
 
 ### Epic C: Plans and limits
 - **C1** As an owner I can see current usage against my plan limits.
@@ -259,9 +525,9 @@ Run with two seeded workspaces (A, B) and one user in each. Every tenant-owned t
 | workspaces | [x] | [x] | [x] | [x] |
 | workspace_members | [x] | [x] | [x] | [x] |
 | invitations | [x] | [x] | [x] | [x] |
-| modules | [ ] | [ ] | [ ] | [ ] |
-| field_definitions | [ ] | [ ] | [ ] | [ ] |
-| records | [ ] | [ ] | [ ] | [ ] |
+| modules | [x] | [x] | [x] | [x] |
+| field_definitions | [x] | [x] | [x] | [x] |
+| records | [x] | [x] | [x] | [x] |
 | attachments (table and storage) | [ ] | [ ] | [ ] | [ ] |
 | audit_events | [x] | [x] | [x] | [x] |
 | subscriptions / entitlements / usage_counters | [ ] | [ ] | [ ] | [ ] |
@@ -298,6 +564,10 @@ growing usage $80 to $300+ per month; domain $10 to $25 per year.
 ---
 
 ## 9. Customer discovery kit
+
+Generic templates. The version tailored to the recommended D1 segment (outreach variants, follow-up
+prompts, 20-prospect sourcing checklist, interview note template, pilot offer with dates from a
+2026-11-17 start) is in `docs/product/discovery-kit.md` (2026-11-03).
 
 **Outreach message**
 
@@ -362,3 +632,4 @@ call or form at week 3 and week 6, data export guaranteed at the end.
 | 2026-10-30 | React + Vite + TypeScript SPA with Supabase backend; Next.js not used for the MVP | Authenticated dashboard needs no SEO; static hosting is cheap; Supabase removes early backend operations |
 | 2026-10-30 | Privileged logic in Supabase Edge Functions; dedicated Node.js API deferred | Fewer services to run before product-market fit |
 | 2026-10-30 | Seven project agents created under `.claude/agents/` | Parallelise scaffolding, tests and reviews for a small team |
+| 2026-11-03 | Recommendation (not decision) for D1: accommodation operators, housekeeping turnover tracking, default module "Housekeeping tasks"; S1 service offices as fallback; S2 retail rejected | Best reachability for a solo founder and the only candidate workflow that fits one flat module without relationships; see `docs/product/segment-comparison.md`. Decision remains with the project lead, due 2026-11-15 |

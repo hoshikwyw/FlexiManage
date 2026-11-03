@@ -106,3 +106,64 @@ values
   ('00000000-0000-0000-0000-0000000000bb', 'Workspace B', 'workspace-b',
    '00000000-0000-0000-0000-00000000000b')
 on conflict (id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- Content (migration 004). Fixed ids mirrored in tests/fixtures/ids.ts.
+--
+--   Workspace A: module "Clients" (slug clients)   00000000-0000-0000-0000-0000000a0001
+--     fields  company        text, required         00000000-0000-0000-0000-0000000f0001
+--             contact_email  text                   00000000-0000-0000-0000-0000000f0002
+--             status         select lead/active/churned  00000000-0000-0000-0000-0000000f0003
+--             value          currency EUR, precision 2   00000000-0000-0000-0000-0000000f0004
+--     records Acme Ltd / Globex / Initech           00000000-0000-0000-0000-0000000e0001..3
+--   Workspace B: module "Projects" (slug projects), no fields, no records
+--                                                   00000000-0000-0000-0000-0000000b0001
+--
+-- The module and field inserts fire the audit triggers (actor_id null, as for
+-- every seed write). The record inserts run through
+-- validate_record_custom_values(). Re-running leaves everything untouched.
+-- ---------------------------------------------------------------------------
+insert into public.modules (id, workspace_id, name, slug, description, icon, position, created_by)
+values
+  ('00000000-0000-0000-0000-0000000a0001', '00000000-0000-0000-0000-0000000000aa',
+   'Clients', 'clients', 'Companies we work with.', 'building-2', 0,
+   '00000000-0000-0000-0000-00000000000a'),
+  ('00000000-0000-0000-0000-0000000b0001', '00000000-0000-0000-0000-0000000000bb',
+   'Projects', 'projects', null, null, 0,
+   '00000000-0000-0000-0000-00000000000b')
+on conflict (id) do nothing;
+
+insert into public.field_definitions (id, workspace_id, module_id, key, label, type, required, position, options, settings)
+values
+  ('00000000-0000-0000-0000-0000000f0001', '00000000-0000-0000-0000-0000000000aa',
+   '00000000-0000-0000-0000-0000000a0001', 'company', 'Company', 'text', true, 0,
+   '[]'::jsonb, '{}'::jsonb),
+  ('00000000-0000-0000-0000-0000000f0002', '00000000-0000-0000-0000-0000000000aa',
+   '00000000-0000-0000-0000-0000000a0001', 'contact_email', 'Contact email', 'text', false, 1,
+   '[]'::jsonb, '{}'::jsonb),
+  ('00000000-0000-0000-0000-0000000f0003', '00000000-0000-0000-0000-0000000000aa',
+   '00000000-0000-0000-0000-0000000a0001', 'status', 'Status', 'select', false, 2,
+   '[{"value": "lead", "label": "Lead"},
+     {"value": "active", "label": "Active"},
+     {"value": "churned", "label": "Churned"}]'::jsonb,
+   '{}'::jsonb),
+  ('00000000-0000-0000-0000-0000000f0004', '00000000-0000-0000-0000-0000000000aa',
+   '00000000-0000-0000-0000-0000000a0001', 'value', 'Contract value', 'currency', false, 3,
+   '[]'::jsonb, '{"currency": "EUR", "precision": 2}'::jsonb)
+on conflict (id) do nothing;
+
+insert into public.records (id, workspace_id, module_id, title, status, custom_values, created_by)
+values
+  ('00000000-0000-0000-0000-0000000e0001', '00000000-0000-0000-0000-0000000000aa',
+   '00000000-0000-0000-0000-0000000a0001', 'Acme Ltd', 'active',
+   '{"company": "Acme Ltd", "contact_email": "jane@acme.example", "status": "active", "value": 12500.5}'::jsonb,
+   '00000000-0000-0000-0000-00000000000a'),
+  ('00000000-0000-0000-0000-0000000e0002', '00000000-0000-0000-0000-0000000000aa',
+   '00000000-0000-0000-0000-0000000a0001', 'Globex Corporation', 'lead',
+   '{"company": "Globex Corporation", "contact_email": "hank@globex.example", "status": "lead"}'::jsonb,
+   '00000000-0000-0000-0000-00000000000a'),
+  ('00000000-0000-0000-0000-0000000e0003', '00000000-0000-0000-0000-0000000000aa',
+   '00000000-0000-0000-0000-0000000a0001', 'Initech', 'churned',
+   '{"company": "Initech", "status": "churned", "value": 0}'::jsonb,
+   '00000000-0000-0000-0000-00000000000a')
+on conflict (id) do nothing;

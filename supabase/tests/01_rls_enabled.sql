@@ -1,19 +1,24 @@
--- 01: structural guarantees of migrations 001 to 003.
+-- 01: structural guarantees of migrations 001 to 004.
 --   * every table in public has row level security enabled
 --   * anon has no privilege on any public table; authenticated has exactly the
 --     table and column grants documented in docs/architecture.md (migration 003
 --     removed the insert grant on workspace_members, narrowed invitations to
 --     column-level select/insert grants and hid invitations.token)
+--   * migration 004 adds modules, field_definitions and records with
+--     column-level insert/update grants (no search_vector, created_at,
+--     updated_at; workspace_id and module_id not updatable)
 --   * the policy set per table matches the documented names
---   * RLS helpers are security definer, stable, have a fixed search_path and
---     are executable by authenticated only; trigger functions by nobody
+--   * RLS helpers (and workspace_usage) are security definer, stable, have a
+--     fixed search_path and are executable by authenticated only; trigger
+--     functions by nobody; the three pure immutable helpers used by check
+--     constraints and the generated column stay executable
 --
 -- Run with `npx supabase test db`. The whole file runs in one transaction
 -- that is rolled back at the end.
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(95);
+select plan(159);
 
 -- ---------------------------------------------------------------------------
 -- Row level security
@@ -26,8 +31,8 @@ select is(
 
 select is(
   (select count(*)::int from pg_tables where schemaname = 'public'),
-  5,
-  'migration 001 creates exactly five tables in public'
+  8,
+  'migrations 001 to 004 create exactly eight tables in public'
 );
 
 select ok(
@@ -36,13 +41,19 @@ select ok(
    where n.nspname = 'public' and c.relname = t),
   format('rls is enabled on public.%s', t)
 )
-from unnest(array['profiles', 'workspaces', 'workspace_members', 'invitations', 'audit_events']) t;
+from unnest(array['profiles', 'workspaces', 'workspace_members', 'invitations', 'audit_events',
+                  'modules', 'field_definitions', 'records']) t;
+
+select has_enum('public', 'field_type', 'enum public.field_type exists');
+select enum_has_labels('public', 'field_type', array['text', 'number', 'date', 'select', 'checkbox', 'currency'],
+  'field_type has the six documented labels');
 
 -- ---------------------------------------------------------------------------
 -- Table privileges
 -- ---------------------------------------------------------------------------
 select table_privs_are('public', t, 'anon', '{}'::text[], format('anon has no privilege on public.%s', t))
-from unnest(array['profiles', 'workspaces', 'workspace_members', 'invitations', 'audit_events']) t;
+from unnest(array['profiles', 'workspaces', 'workspace_members', 'invitations', 'audit_events',
+                  'modules', 'field_definitions', 'records']) t;
 
 -- has_table_privilege ignores column-level grants, so UPDATE is absent here
 -- and asserted per column below.
@@ -57,6 +68,10 @@ select table_privs_are('public', 'invitations', 'authenticated', array['DELETE']
   'authenticated may only delete invitations at table level');
 select table_privs_are('public', 'audit_events', 'authenticated', array['SELECT'],
   'authenticated may only select audit_events');
+-- Migration 004: insert and update on the content tables are column-level grants.
+select table_privs_are('public', t, 'authenticated', array['SELECT', 'DELETE'],
+  format('authenticated may select and delete %s at table level (insert/update are column-level)', t))
+from unnest(array['modules', 'field_definitions', 'records']) t;
 
 -- Column-level update grants (has_column_privilege also reports table-level
 -- SELECT/INSERT, so those appear in the expected lists).
@@ -90,6 +105,31 @@ select column_privs_are('public', 'invitations', 'token', 'authenticated', '{}':
   'authenticated has no privilege on invitations.token');
 select column_privs_are('public', 'audit_events', 'metadata', 'authenticated', array['SELECT'],
   'authenticated may not update audit_events.metadata');
+-- Migration 004 content tables.
+select column_privs_are('public', 'modules', 'workspace_id', 'authenticated', array['SELECT', 'INSERT'],
+  'authenticated may insert but not update modules.workspace_id');
+select column_privs_are('public', 'modules', 'name', 'authenticated', array['SELECT', 'INSERT', 'UPDATE'],
+  'authenticated may insert and update modules.name');
+select column_privs_are('public', 'modules', 'created_by', 'authenticated', array['SELECT', 'INSERT'],
+  'authenticated may insert but not update modules.created_by');
+select column_privs_are('public', 'modules', 'created_at', 'authenticated', array['SELECT'],
+  'authenticated may only read modules.created_at');
+select column_privs_are('public', 'field_definitions', 'key', 'authenticated', array['SELECT', 'INSERT', 'UPDATE'],
+  'authenticated may insert and update field_definitions.key (the trigger rejects changes with 23514)');
+select column_privs_are('public', 'field_definitions', 'module_id', 'authenticated', array['SELECT', 'INSERT'],
+  'authenticated may insert but not update field_definitions.module_id');
+select column_privs_are('public', 'field_definitions', 'workspace_id', 'authenticated', array['SELECT', 'INSERT'],
+  'authenticated may insert but not update field_definitions.workspace_id');
+select column_privs_are('public', 'records', 'search_vector', 'authenticated', array['SELECT'],
+  'authenticated may only read records.search_vector');
+select column_privs_are('public', 'records', 'workspace_id', 'authenticated', array['SELECT', 'INSERT'],
+  'authenticated may insert but not update records.workspace_id');
+select column_privs_are('public', 'records', 'module_id', 'authenticated', array['SELECT', 'INSERT'],
+  'authenticated may insert but not update records.module_id');
+select column_privs_are('public', 'records', 'custom_values', 'authenticated', array['SELECT', 'INSERT', 'UPDATE'],
+  'authenticated may insert and update records.custom_values');
+select column_privs_are('public', 'records', 'created_by', 'authenticated', array['SELECT', 'INSERT'],
+  'authenticated may insert but not update records.created_by');
 
 -- ---------------------------------------------------------------------------
 -- Policies: one per command, named <table>_<command>_<who>
@@ -112,6 +152,18 @@ select policies_are('public', 'invitations',
 select policies_are('public', 'audit_events',
   array['audit_events_select_member'],
   'audit_events has exactly the documented policies');
+select policies_are('public', 'modules',
+  array['modules_select_member', 'modules_insert_owner_admin',
+        'modules_update_owner_admin', 'modules_delete_owner_admin'],
+  'modules has exactly the documented policies');
+select policies_are('public', 'field_definitions',
+  array['field_definitions_select_member', 'field_definitions_insert_owner_admin',
+        'field_definitions_update_owner_admin', 'field_definitions_delete_owner_admin'],
+  'field_definitions has exactly the documented policies');
+select policies_are('public', 'records',
+  array['records_select_member', 'records_insert_member',
+        'records_update_member', 'records_delete_member'],
+  'records has exactly the documented policies');
 
 -- Every policy is scoped to authenticated, never to public or anon.
 select is(
@@ -129,7 +181,8 @@ insert into helper_fn values
   ('is_workspace_member', array['uuid']),
   ('has_workspace_role', array['uuid', 'public.workspace_role[]']),
   ('current_user_workspace_ids', '{}'::text[]),
-  ('shares_workspace_with', array['uuid']);
+  ('shares_workspace_with', array['uuid']),
+  ('workspace_usage', array['uuid']);
 
 select is_definer('public', fname, fargs, format('%s is security definer', fname)) from helper_fn;
 select volatility_is('public', fname, fargs, 'stable', format('%s is stable', fname)) from helper_fn;
@@ -139,6 +192,22 @@ select function_privs_are('public', fname, fargs, 'authenticated', array['EXECUT
   format('authenticated can execute %s', fname)) from helper_fn;
 select function_privs_are('public', fname, fargs, 'public', '{}'::text[],
   format('public cannot execute %s', fname)) from helper_fn;
+
+-- ---------------------------------------------------------------------------
+-- Pure helpers (migration 004): immutable, no security definer, executable by
+-- the writing roles because check constraints and the generated column run
+-- with the caller's privileges
+-- ---------------------------------------------------------------------------
+create temp table pure_fn (fname text, fargs text[]) on commit drop;
+insert into pure_fn values
+  ('jsonb_values_text', array['jsonb']),
+  ('field_options_are_valid', array['public.field_type', 'jsonb']),
+  ('field_settings_are_valid', array['public.field_type', 'jsonb']);
+
+select volatility_is('public', fname, fargs, 'immutable', format('%s is immutable', fname)) from pure_fn;
+select isnt_definer('public', fname, fargs, format('%s is not security definer', fname)) from pure_fn;
+select function_privs_are('public', fname, fargs, 'authenticated', array['EXECUTE'],
+  format('authenticated can execute %s (needed by the check constraint / generated column)', fname)) from pure_fn;
 
 -- ---------------------------------------------------------------------------
 -- Trigger functions: fixed search_path, not callable by any API role
@@ -152,7 +221,12 @@ insert into trigger_fn values
   ('audit_workspace_member_change', true),
   ('audit_invitation_change', true),
   ('handle_user_deleted', true),
-  ('handle_user_email_changed', true);
+  ('handle_user_email_changed', true),
+  ('validate_record_custom_values', true),
+  ('protect_field_definition', true),
+  ('handle_field_deleted', true),
+  ('audit_module_change', true),
+  ('audit_field_change', true);
 
 select is_definer('public', fname, '{}'::text[], format('%s is security definer', fname))
 from trigger_fn where definer;
@@ -172,8 +246,8 @@ order by p.proname;
 
 select is(
   (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace),
-  13,
-  'migrations 001 to 003 define exactly thirteen functions in public'
+  22,
+  'migrations 001 to 004 define exactly twenty-two functions in public'
 );
 
 select * from finish();
