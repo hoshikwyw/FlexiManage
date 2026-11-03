@@ -18,68 +18,11 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 select plan(65);
+\ir helpers/tests_schema.sql.inc
 
--- ---------------------------------------------------------------------------
--- Helpers (rolled back with the transaction)
--- ---------------------------------------------------------------------------
-create schema tests;
-grant usage on schema tests to anon, authenticated;
-
-create function tests.login_as(p_user_id uuid) returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims',
-    json_build_object('sub', p_user_id, 'role', 'authenticated')::text, true);
-  execute 'set local role authenticated';
-end;
-$$;
-
-create function tests.logout() returns void
-language plpgsql as $$
-begin
-  execute 'reset role';
-  perform set_config('request.jwt.claims', '', true);
-end;
-$$;
-
-create function tests.rows_affected(p_sql text) returns integer
-language plpgsql as $$
-declare
-  v_count integer;
-begin
-  execute p_sql;
-  get diagnostics v_count = row_count;
-  return v_count;
-end;
-$$;
-
-create function tests.create_user(p_id uuid, p_email text, p_full_name text, p_avatar text default null)
-returns void
-language plpgsql as $$
-begin
-  insert into auth.users (instance_id, id, aud, role, email, raw_app_meta_data, raw_user_meta_data,
-                          email_confirmed_at, created_at, updated_at)
-  values ('00000000-0000-0000-0000-000000000000', p_id, 'authenticated', 'authenticated', p_email,
-          '{"provider": "email", "providers": ["email"]}'::jsonb,
-          jsonb_strip_nulls(jsonb_build_object('full_name', p_full_name, 'avatar_url', p_avatar)),
-          now(), now(), now());
-end;
-$$;
-
-create function tests.alice() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000a'::uuid $$;
-create function tests.carol() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000c'::uuid $$;
-create function tests.dave() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000d'::uuid $$;
-create function tests.erin() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000e'::uuid $$;
-create function tests.frank() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000f'::uuid $$;
-create function tests.grace() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-000000000010'::uuid $$;
-create function tests.ws_a() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
+-- Independent of pre-existing rows: assertions on A's invitations and their
+-- audit rows are restricted to rows written in this transaction
+-- (created_at >= now()); A's member count is a delta on the captured count.
 create function tests.ws_c() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-0000000000cc'::uuid $$;
 create function tests.ws_d() returns uuid language sql immutable
@@ -87,15 +30,11 @@ create function tests.ws_d() returns uuid language sql immutable
 create function tests.ws_e() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-0000000000ee'::uuid $$;
 
-create function tests.role_in(p_ws uuid, p_user_id uuid) returns text
-language sql security definer set search_path = '' as $$
-  select m.role::text from public.workspace_members m
-  where m.workspace_id = p_ws and m.user_id = p_user_id
-$$;
-
 -- ---------------------------------------------------------------------------
 -- Fixtures (as postgres)
 -- ---------------------------------------------------------------------------
+select tests.remember_count('a_members', (select count(*) from public.workspace_members where workspace_id = tests.ws_a()));
+
 select tests.create_user(tests.carol(), 'carol@example.com', 'Carol Example');
 select tests.create_user(tests.dave(),  'dave@example.com',  'Dave Example');
 select tests.create_user(tests.erin(),  'erin@example.com',  'Erin Example');
@@ -190,7 +129,7 @@ select throws_ok(
 select is(
   (select count(*)::int from (
      select id, workspace_id, email, role, invited_by, expires_at, accepted_at, created_at
-     from public.invitations where workspace_id = tests.ws_a()) s),
+     from public.invitations where workspace_id = tests.ws_a() and created_at >= now()) s),
   1, 'owner: selecting the explicit allowed columns works');
 
 -- No email in invitation audit metadata.
@@ -200,9 +139,9 @@ select is(
   0, 'owner: invitation.created metadata has no email key');
 select results_eq(
   format($sql$select metadata from public.audit_events
-             where workspace_id = %L and action = 'invitation.created'$sql$, tests.ws_a()),
+             where workspace_id = %L and action = 'invitation.created' and created_at >= now()$sql$, tests.ws_a()),
   format($sql$select jsonb_build_object('role', 'member', 'invitation_id', i.id) from public.invitations i
-             where i.workspace_id = %L$sql$, tests.ws_a()),
+             where i.workspace_id = %L and i.created_at >= now()$sql$, tests.ws_a()),
   'owner: invitation.created metadata is exactly invitation_id and role');
 
 select is(tests.rows_affected(format($sql$delete from public.invitations where workspace_id = %L and email = 'Dup@Example.com'$sql$, tests.ws_a())),
@@ -213,7 +152,7 @@ select is(
   0, 'owner: invitation.revoked metadata has no email key');
 select is(
   (select metadata - 'invitation_id' from public.audit_events
-   where workspace_id = tests.ws_a() and action = 'invitation.revoked'),
+   where workspace_id = tests.ws_a() and action = 'invitation.revoked' and created_at >= now()),
   '{"role": "member", "accepted": false}'::jsonb,
   'owner: invitation.revoked metadata keeps role and accepted');
 
@@ -321,7 +260,8 @@ select is((select count(*)::int from public.audit_events where workspace_id = te
 
 -- A: alice remains owner; only carol's admin membership is removed.
 select is(tests.role_in(tests.ws_a(), tests.alice()), 'owner', 'A: alice is still owner');
-select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), 1, 'A: only alice remains');
+select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), tests.recall_count('a_members'),
+  'A: the member count is back to what it was before carol joined');
 select is((select count(*)::int from public.audit_events
            where workspace_id = tests.ws_a() and action = 'member.removed' and entity_id = tests.carol()::text and actor_id is null),
   1, 'A: member.removed for carol with actor_id null');
@@ -338,7 +278,7 @@ update auth.users set updated_at = now() where id = tests.alice();
 select is((select email from public.profiles where id = tests.alice()), 'alice.new@example.com',
   'an auth.users update that does not touch email leaves the profile alone');
 
-select tests.create_user(tests.grace(), 'grace@example.com', repeat('g', 150), 'http://insecure.example.com/a.png');
+select tests.create_user(tests.grace(), 'grace@example.com', repeat('g', 150), p_avatar => 'http://insecure.example.com/a.png');
 select is((select char_length(full_name) from public.profiles where id = tests.grace()), 100,
   'handle_new_user truncates full_name to 100 chars');
 select is((select avatar_url from public.profiles where id = tests.grace()), null,

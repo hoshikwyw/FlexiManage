@@ -1,7 +1,8 @@
 # Operations
 
 Runtime and tooling notes for operators. Updated by the `devops-engineer` and `supabase-engineer`
-agents. Last updated: 2026-11-02 (Production prerequisites, migration 003).
+agents. Last updated: 2026-11-03 (Database tests: used-database runs, shared helpers, `test:db:fresh`,
+`db:dirty`).
 
 ## Production prerequisites
 
@@ -77,26 +78,67 @@ the CLI is installed globally).
 | `npx supabase status`               | Show URLs and keys of the running stack.                                                                    |
 | `npm run db:reset`                  | `supabase db reset`: drop the local database, re-apply every file in `supabase/migrations`, run `seed.sql`. |
 | `npm run db:types`                  | `supabase gen types typescript --local > src/types/supabase.ts`. Run after every migration change.          |
-| `npm run test:db`                   | `supabase test db`: run every `supabase/tests/*.sql` file with pgTAP (pg_prove in a container) against the local database. |
+| `npm run test:db`                   | `supabase test db`: run every `supabase/tests/*.sql` file with pgTAP (pg_prove in a container) against the local database, fresh or used. |
+| `npm run test:db:fresh`             | `supabase db reset && supabase test db`: the CI-equivalent run against a freshly seeded database.           |
+| `npm run db:dirty`                  | Apply `scripts/db/dirty-state.sql` through `docker exec ... psql` to simulate a manual testing session (local only). |
 | `npx supabase migration new <name>` | Create an empty timestamped migration file.                                                                 |
 | `npm run functions:serve`           | `supabase functions serve`: serve every folder in `supabase/functions` at `http://127.0.0.1:54321/functions/v1/<name>` with hot reload. See Edge Functions below. |
 | `npm run db:stop`                   | `supabase stop`: stop the containers (data is kept in a Docker volume; `--no-backup` discards it).          |
 
 ### Database tests
 
-`npm run test:db` needs the stack running (`npm run db:start`) and a database that matches the
-migrations and seed (`npm run db:reset` after any schema or seed change). The CLI installs the
-`pgtap` extension in the `extensions` schema if it is missing and runs `pg_prove` over
-`supabase/tests` in file-name order. Conventions:
+`npm run test:db` needs the stack running (`npm run db:start`) and a database whose schema matches
+the migrations (`npm run db:reset` after any schema or seed change). The CLI installs the `pgtap`
+extension in the `extensions` schema if it is missing and runs `pg_prove` over `supabase/tests`
+(recursively, `*.sql` only) in file-name order.
+
+Two runs matter:
+
+- `npm run test:db` must pass on a **used** database: after manual testing in the app, Studio or
+  psql has added users, workspaces, invitations and (append-only) audit rows, without a reset.
+- `npm run test:db:fresh` (`db:reset` then `test:db`) is the CI-equivalent run on a freshly seeded
+  database. CI runs `supabase start` and `supabase test db`, which is the same thing.
+
+To check the first locally, `npm run db:dirty` applies `scripts/db/dirty-state.sql` as `postgres`
+(three extra users, two extra workspaces, alice as admin of one, four invitations in A of which
+one is accepted through `accept_invitation()` and one revoked, workspace A renamed and renamed
+back, every profile re-saved). It is re-runnable and lives outside `supabase/tests` so pg_prove
+never collects it. `npm run db:reset` returns to the seed.
+
+Conventions (2026-11-03, Part 8b):
 
 - Files are numbered (`01_rls_enabled.sql` ... `12_review_fixes.sql`) and each wraps everything in
   `begin; select plan(N); ... select * from finish(); rollback;`, so a run leaves no data behind.
+- The shared helpers live in `supabase/tests/helpers/tests_schema.sql.inc` and are pulled in with
+  `\ir helpers/tests_schema.sql.inc` right after `select plan(N)` (psql resolves `\ir` relative to
+  the including file, also inside the pg_prove container; the `.sql.inc` extension keeps pg_prove
+  from running it as a test). It creates the transaction-local `tests` schema with `login_as(uuid)`,
+  `login_as_anon()`, `logout()`, `rows_affected(sql)`, `create_user(id, email, name[, confirmed,
+  avatar])`, `role_in(ws, user)`, `token_of(invitation)`, `remember_count` / `recall_count` and
+  `remember_text` / `recall_text` (transaction-local `set_config` slots for delta assertions), the
+  fixed ids (`alice`, `bob`, `ws_a`, `ws_b`, `carol` ... `grace`) and `assert_seed_invariants()`,
+  which aborts the file with a clear message when the seed invariants below are broken.
 - Users are impersonated the way PostgREST does: `set local role authenticated` plus
-  `set_config('request.jwt.claims', '{"sub": "<uuid>", "role": "authenticated"}', true)`. Each file
-  defines the small `tests.login_as(uuid)`, `tests.logout()` and `tests.rows_affected(sql)` helpers
-  inside its transaction. Extra users and memberships are inserted as `postgres` before
-  impersonating.
-- Fixed ids come from `supabase/seed.sql` / `tests/fixtures/ids.ts` (alice owns A, bob owns B).
+  `set_config('request.jwt.claims', '{"sub": "<uuid>", "role": "authenticated"}', true)`. Extra
+  users and memberships are inserted as `postgres` before impersonating.
+- The only seed facts a test may assume are: workspaces A and B exist, alice owns A and is not a
+  member of B, bob owns B and is not a member of A (`supabase/seed.sql`, `tests/fixtures/ids.ts`).
+  Nothing else about the database is assumed. Therefore:
+  - exact result sets are asserted on fixtures created inside the transaction (new users via
+    `tests.create_user()`, new workspaces inserted as the owner so the triggers fire), never on
+    seed totals;
+  - "sees exactly X" on a seed user is written as "sees nothing outside the workspaces they belong
+    to" (`is_empty('select ... except select workspace_id from workspace_members where user_id = ...')`)
+    plus "sees X";
+  - counts on seed workspaces are deltas against a count captured before the fixtures
+    (`tests.remember_count` / `tests.recall_count`) or are restricted to rows written in the
+    transaction with `created_at >= now()` (`now()` is frozen per transaction, so this selects
+    exactly the test's own rows); "untouched" checks compare with a snapshot temp table;
+  - destructive controls are scoped to ids (`delete ... where id = tests.ws_a()`), run last, and
+    seed rows are never re-inserted.
+- Fixture emails (`carol@example.com` ... `grace@example.com`, `invitee-a@example.com`, `c1@` ...)
+  and fixed fixture ids must not be used by manual testing or by `dirty-state.sql`
+  (`auth.users.email` is unique and `invitations_pending_unique` is per workspace and address).
 - A failing test that exposes a schema bug is fixed with a new migration, never by editing an
   applied one or by weakening the assertion.
 

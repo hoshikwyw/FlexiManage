@@ -15,65 +15,11 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 select plan(32);
+\ir helpers/tests_schema.sql.inc
 
--- ---------------------------------------------------------------------------
--- Helpers (rolled back with the transaction)
--- ---------------------------------------------------------------------------
-create schema tests;
-grant usage on schema tests to anon, authenticated, service_role;
-
-create function tests.login_as(p_user_id uuid) returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims',
-    json_build_object('sub', p_user_id, 'role', 'authenticated')::text, true);
-  execute 'set local role authenticated';
-end;
-$$;
-
-create function tests.login_as_anon() returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
-  execute 'set local role anon';
-end;
-$$;
-
-create function tests.logout() returns void
-language plpgsql as $$
-begin
-  execute 'reset role';
-  perform set_config('request.jwt.claims', '', true);
-end;
-$$;
-
-create function tests.create_user(p_id uuid, p_email text, p_full_name text, p_confirmed boolean default true)
-returns void
-language plpgsql as $$
-begin
-  insert into auth.users (instance_id, id, aud, role, email, raw_app_meta_data, raw_user_meta_data,
-                          email_confirmed_at, created_at, updated_at)
-  values ('00000000-0000-0000-0000-000000000000', p_id, 'authenticated', 'authenticated', p_email,
-          '{"provider": "email", "providers": ["email"]}'::jsonb,
-          jsonb_build_object('full_name', p_full_name),
-          case when p_confirmed then now() end, now(), now());
-end;
-$$;
-
-create function tests.alice() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000a'::uuid $$;
-create function tests.carol() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000c'::uuid $$;
-create function tests.dave() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000d'::uuid $$;
-create function tests.erin() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000e'::uuid $$;
-create function tests.ws_a() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
-create function tests.ws_b() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000bb'::uuid $$;
-create function tests.bob() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000b'::uuid $$;
+-- Independent of pre-existing rows: audit counts on A are restricted to rows
+-- written in this transaction (created_at >= now()) or to fixture ids, and the
+-- member count carol sees is a delta on the count captured before the fixtures.
 create function tests.inv_ok() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-00000000b001'::uuid $$;
 create function tests.inv_expired() returns uuid language sql immutable
@@ -87,15 +33,11 @@ create function tests.inv_erin() returns uuid language sql immutable
 create function tests.inv_alice() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-00000000b006'::uuid $$;
 
--- Token of an invitation, readable while impersonating (security definer).
-create function tests.token_of(p_id uuid) returns text
-language sql security definer set search_path = '' as $$
-  select i.token from public.invitations i where i.id = p_id
-$$;
-
 -- ---------------------------------------------------------------------------
 -- Fixtures (as postgres)
 -- ---------------------------------------------------------------------------
+select tests.remember_count('a_members', (select count(*) from public.workspace_members where workspace_id = tests.ws_a()));
+
 select tests.create_user(tests.carol(), 'carol@example.com', 'Carol Example');
 select tests.create_user(tests.dave(),  'dave@example.com',  'Dave Example');
 select tests.create_user(tests.erin(),  'erin@example.com',  'Erin Example', false);
@@ -165,7 +107,8 @@ select throws_ok(
 select tests.logout();
 select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a() and user_id = tests.carol()),
   0, 'postgres: carol is still not a member after the failed attempts');
-select is((select count(*)::int from public.audit_events where workspace_id = tests.ws_a() and action = 'invitation.accepted'),
+select is((select count(*)::int from public.audit_events
+           where workspace_id = tests.ws_a() and action = 'invitation.accepted' and created_at >= now()),
   0, 'postgres: failed attempts wrote no invitation.accepted event');
 
 -- ---------------------------------------------------------------------------
@@ -179,8 +122,8 @@ select results_eq(
   format($sql$values (%L::uuid, 'Workspace A', 'workspace-a', 'admin')$sql$, tests.ws_a()),
   'carol: accepting returns the workspace and the invited role');
 
-select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), 2,
-  'carol: can now read the members of workspace A');
+select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), tests.recall_count('a_members') + 1,
+  'carol: can now read the members of workspace A (the existing ones plus herself)');
 
 select throws_ok(
   format('select * from public.accept_invitation(%L)', tests.token_of(tests.inv_ok())),
@@ -198,7 +141,7 @@ select ok((select accepted_at >= now() - interval '1 minute' from public.invitat
 
 select results_eq(
   format($sql$select actor_id, entity_type, entity_id, metadata from public.audit_events
-          where workspace_id = %L and action = 'invitation.accepted'$sql$, tests.ws_a()),
+          where workspace_id = %L and action = 'invitation.accepted' and created_at >= now()$sql$, tests.ws_a()),
   format($sql$values (%L::uuid, 'invitation', %L::text,
           jsonb_build_object('role', 'admin', 'invitation_id', %L::uuid, 'already_member', false))$sql$,
          tests.carol(), tests.inv_ok(), tests.inv_ok()),
@@ -246,14 +189,16 @@ select is((select role::text from public.workspace_members where workspace_id = 
 select ok((select accepted_at is not null from public.invitations where id = tests.inv_alice()),
   'postgres: alice''s invitation is consumed');
 select is((select count(*)::int from public.audit_events
-           where workspace_id = tests.ws_a() and action = 'member.added' and entity_id = tests.alice()::text),
-  1, 'postgres: no second member.added for alice (only the seed one)');
+           where workspace_id = tests.ws_a() and action = 'member.added' and entity_id = tests.alice()::text
+             and created_at >= now()),
+  0, 'postgres: accepting as an existing member writes no new member.added for alice');
 select is((select metadata ->> 'already_member' from public.audit_events
            where workspace_id = tests.ws_a() and action = 'invitation.accepted' and entity_id = tests.inv_alice()::text),
   'true', 'postgres: invitation.accepted for alice is flagged already_member');
 
-select is((select count(*)::int from public.audit_events where workspace_id = tests.ws_a() and action = 'invitation.accepted'),
-  2, 'postgres: exactly two invitation.accepted events in total');
+select is((select count(*)::int from public.audit_events
+           where workspace_id = tests.ws_a() and action = 'invitation.accepted' and created_at >= now()),
+  2, 'postgres: exactly two invitation.accepted events were written in this transaction');
 
 select * from finish();
 rollback;

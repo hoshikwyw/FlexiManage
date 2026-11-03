@@ -9,3 +9,6 @@ supabase/.temp
 CLAUDE.md
 docs/
 .claude/
+
+# psql include files are SQL; Prettier would infer .inc as HTML
+*.sql.inc

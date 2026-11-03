@@ -8,87 +8,25 @@
 -- accept_invitation(), covered in 11). Where a later assertion needs erin,
 -- frank or grace as a member, the row is inserted as postgres, standing in for
 -- the security definer path.
+--
+-- Independent of pre-existing rows: member and invitation counts on A are
+-- deltas on counts captured before the fixtures, and the final state check
+-- looks only at memberships created inside this transaction.
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(45);
+select plan(46);
+\ir helpers/tests_schema.sql.inc
 
--- ---------------------------------------------------------------------------
--- Helpers (rolled back with the transaction)
--- ---------------------------------------------------------------------------
-create schema tests;
-grant usage on schema tests to anon, authenticated;
-
-create function tests.login_as(p_user_id uuid) returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims',
-    json_build_object('sub', p_user_id, 'role', 'authenticated')::text, true);
-  execute 'set local role authenticated';
-end;
-$$;
-
-create function tests.logout() returns void
-language plpgsql as $$
-begin
-  execute 'reset role';
-  perform set_config('request.jwt.claims', '', true);
-end;
-$$;
-
-create function tests.rows_affected(p_sql text) returns integer
-language plpgsql as $$
-declare
-  v_count integer;
-begin
-  execute p_sql;
-  get diagnostics v_count = row_count;
-  return v_count;
-end;
-$$;
-
--- Minimal auth.users row; the on_auth_user_created trigger adds the profile.
-create function tests.create_user(p_id uuid, p_email text, p_full_name text) returns void
-language plpgsql as $$
-begin
-  insert into auth.users (instance_id, id, aud, role, email, raw_app_meta_data, raw_user_meta_data,
-                          email_confirmed_at, created_at, updated_at)
-  values ('00000000-0000-0000-0000-000000000000', p_id, 'authenticated', 'authenticated', p_email,
-          '{"provider": "email", "providers": ["email"]}'::jsonb,
-          jsonb_build_object('full_name', p_full_name), now(), now(), now());
-end;
-$$;
-
-create function tests.alice() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000a'::uuid $$;
-create function tests.bob() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000b'::uuid $$;
-create function tests.carol() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000c'::uuid $$;
-create function tests.dave() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000d'::uuid $$;
-create function tests.erin() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000e'::uuid $$;
-create function tests.frank() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000f'::uuid $$;
-create function tests.grace() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-000000000010'::uuid $$;
-create function tests.ws_a() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
 create function tests.inv_a() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-00000000a001'::uuid $$;
-
--- Current role of a user in workspace A, as text, read as postgres-owned helper
--- (security definer so it can be called while impersonating).
-create function tests.role_in_a(p_user_id uuid) returns text
-language sql security definer set search_path = '' as $$
-  select m.role::text from public.workspace_members m
-  where m.workspace_id = '00000000-0000-0000-0000-0000000000aa' and m.user_id = p_user_id
-$$;
 
 -- ---------------------------------------------------------------------------
 -- Fixtures (as postgres)
 -- ---------------------------------------------------------------------------
+select tests.remember_count('a_members', (select count(*) from public.workspace_members where workspace_id = tests.ws_a()));
+select tests.remember_count('a_invitations', (select count(*) from public.invitations where workspace_id = tests.ws_a()));
+
 select tests.create_user(tests.carol(), 'carol@example.com', 'Carol Example');
 select tests.create_user(tests.dave(),  'dave@example.com',  'Dave Example');
 select tests.create_user(tests.erin(),  'erin@example.com',  'Erin Example');
@@ -109,8 +47,8 @@ select tests.login_as(tests.dave());
 
 select is((select count(*)::int from public.workspaces where id = tests.ws_a()), 1,
   'member: can read the workspace');
-select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), 3,
-  'member: can read all members of the workspace');
+select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), tests.recall_count('a_members') + 2,
+  'member: can read all members of the workspace (the existing ones plus carol and dave)');
 select ok((select count(*) from public.audit_events where workspace_id = tests.ws_a()) > 0,
   'member: can read the workspace audit log');
 select is((select count(*)::int from public.invitations where workspace_id = tests.ws_a()), 0,
@@ -152,17 +90,17 @@ select is(tests.rows_affected(format($sql$delete from public.workspace_members w
   1, 'member: can leave the workspace');
 
 select tests.logout();
-select is(tests.role_in_a(tests.dave()), null, 'postgres: dave is no longer a member after leaving');
+select is(tests.role_in(tests.ws_a(), tests.dave()), null, 'postgres: dave is no longer a member after leaving');
 
 -- ---------------------------------------------------------------------------
 -- carol (admin)
 -- ---------------------------------------------------------------------------
 select tests.login_as(tests.carol());
 
-select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), 2,
-  'admin: can read all members of the workspace');
-select is((select count(*)::int from public.invitations where workspace_id = tests.ws_a()), 1,
-  'admin: can list invitations');
+select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), tests.recall_count('a_members') + 1,
+  'admin: can read all members of the workspace (the existing ones plus carol)');
+select is((select count(*)::int from public.invitations where workspace_id = tests.ws_a()), tests.recall_count('a_invitations') + 1,
+  'admin: can list invitations (the existing ones plus the fixture)');
 select is(tests.rows_affected(format($sql$update public.workspaces set name = 'Workspace A (admin)' where id = %L$sql$, tests.ws_a())),
   1, 'admin: can rename the workspace');
 select is(tests.rows_affected(format($sql$delete from public.workspaces where id = %L$sql$, tests.ws_a())),
@@ -242,7 +180,7 @@ select is(tests.rows_affected(format($sql$delete from public.invitations where w
   1, 'admin: can revoke an invitation');
 
 select tests.logout();
-select is(tests.role_in_a(tests.alice()), 'owner', 'postgres: alice is still owner after the admin''s attempts');
+select is(tests.role_in(tests.ws_a(), tests.alice()), 'owner', 'postgres: alice is still owner after the admin''s attempts');
 
 -- ---------------------------------------------------------------------------
 -- alice (owner): everything
@@ -289,10 +227,11 @@ select is(tests.rows_affected(format($sql$delete from public.invitations where i
   1, 'owner: can revoke an invitation');
 
 select tests.logout();
+select is(tests.role_in(tests.ws_a(), tests.alice()), 'owner', 'postgres: alice ends as the owner of workspace A');
 select results_eq(
-  format('select user_id, role::text from public.workspace_members where workspace_id = %L order by user_id', tests.ws_a()),
-  format($sql$values (%L::uuid, 'owner'), (%L::uuid, 'admin')$sql$, tests.alice(), tests.carol()),
-  'postgres: workspace A ends with alice as owner and carol as admin'
+  format('select user_id, role::text from public.workspace_members where workspace_id = %L and created_at >= now() order by user_id', tests.ws_a()),
+  format($sql$values (%L::uuid, 'admin')$sql$, tests.carol()),
+  'postgres: of the members added in this test only carol (admin) remains in workspace A'
 );
 
 select * from finish();

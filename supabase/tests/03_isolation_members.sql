@@ -5,53 +5,21 @@
 -- Since migration 003 authenticated has no insert grant at all (membership is
 -- created only by accept_invitation() and the workspace trigger), so inserts
 -- fail with "permission denied" before RLS is even evaluated.
+--
+-- Independent of pre-existing rows: visibility is asserted as "no membership
+-- row outside the caller's own workspaces" plus the caller's own row, and the
+-- untouched checks compare A's and B's memberships with a snapshot taken at
+-- the start.
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(17);
+select plan(19);
+\ir helpers/tests_schema.sql.inc
 
--- ---------------------------------------------------------------------------
--- Helpers (rolled back with the transaction)
--- ---------------------------------------------------------------------------
-create schema tests;
-grant usage on schema tests to anon, authenticated;
-
-create function tests.login_as(p_user_id uuid) returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims',
-    json_build_object('sub', p_user_id, 'role', 'authenticated')::text, true);
-  execute 'set local role authenticated';
-end;
-$$;
-
-create function tests.logout() returns void
-language plpgsql as $$
-begin
-  execute 'reset role';
-  perform set_config('request.jwt.claims', '', true);
-end;
-$$;
-
-create function tests.rows_affected(p_sql text) returns integer
-language plpgsql as $$
-declare
-  v_count integer;
-begin
-  execute p_sql;
-  get diagnostics v_count = row_count;
-  return v_count;
-end;
-$$;
-
-create function tests.alice() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000a'::uuid $$;
-create function tests.bob() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000b'::uuid $$;
-create function tests.ws_a() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
-create function tests.ws_b() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000bb'::uuid $$;
+-- Snapshot of both seed workspaces' memberships before any attempt (as postgres).
+create temp table members_before as
+  select workspace_id, user_id, role, updated_at from public.workspace_members
+  where workspace_id in (tests.ws_a(), tests.ws_b());
 
 -- ---------------------------------------------------------------------------
 -- Alice against Workspace B
@@ -60,10 +28,15 @@ select tests.login_as(tests.alice());
 
 select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_b()), 0,
   'alice: select of workspace B members returns 0 rows');
+select is_empty(
+  format($sql$select workspace_id from public.workspace_members
+          except select workspace_id from public.workspace_members where user_id = %L$sql$, tests.alice()),
+  'alice: sees no membership row outside her own workspaces');
 select results_eq(
-  'select workspace_id, user_id from public.workspace_members',
-  format('values (%L::uuid, %L::uuid)', tests.ws_a(), tests.alice()),
-  'alice: sees exactly her own membership in workspace A'
+  format('select user_id, role::text from public.workspace_members where workspace_id = %L and user_id = %L',
+         tests.ws_a(), tests.alice()),
+  format($sql$values (%L::uuid, 'owner')$sql$, tests.alice()),
+  'alice: sees her own owner membership in workspace A'
 );
 
 select throws_ok(
@@ -106,12 +79,12 @@ select is(
 
 select tests.logout();
 select results_eq(
-  format('select user_id, role from public.workspace_members where workspace_id = %L', tests.ws_b()),
-  format($sql$values (%L::uuid, 'owner'::public.workspace_role)$sql$, tests.bob()),
-  'postgres: workspace B still has exactly bob as owner'
+  format('select workspace_id, user_id, role, updated_at from public.workspace_members where workspace_id = %L order by user_id', tests.ws_b()),
+  format('select workspace_id, user_id, role, updated_at from members_before where workspace_id = %L order by user_id', tests.ws_b()),
+  'postgres: workspace B memberships are unchanged after alice''s attempts'
 );
-select is((select count(*)::int from public.workspace_members where user_id = tests.alice()), 1,
-  'postgres: alice still has exactly one membership (workspace A)');
+select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_b() and user_id = tests.alice()), 0,
+  'postgres: alice has no membership in workspace B');
 
 -- ---------------------------------------------------------------------------
 -- Bob against Workspace A
@@ -120,10 +93,15 @@ select tests.login_as(tests.bob());
 
 select is((select count(*)::int from public.workspace_members where workspace_id = tests.ws_a()), 0,
   'bob: select of workspace A members returns 0 rows');
+select is_empty(
+  format($sql$select workspace_id from public.workspace_members
+          except select workspace_id from public.workspace_members where user_id = %L$sql$, tests.bob()),
+  'bob: sees no membership row outside his own workspaces');
 select results_eq(
-  'select workspace_id, user_id from public.workspace_members',
-  format('values (%L::uuid, %L::uuid)', tests.ws_b(), tests.bob()),
-  'bob: sees exactly his own membership in workspace B'
+  format('select user_id, role::text from public.workspace_members where workspace_id = %L and user_id = %L',
+         tests.ws_b(), tests.bob()),
+  format($sql$values (%L::uuid, 'owner')$sql$, tests.bob()),
+  'bob: sees his own owner membership in workspace B'
 );
 
 select throws_ok(
@@ -145,9 +123,9 @@ select is(
 
 select tests.logout();
 select results_eq(
-  format('select user_id, role from public.workspace_members where workspace_id = %L', tests.ws_a()),
-  format($sql$values (%L::uuid, 'owner'::public.workspace_role)$sql$, tests.alice()),
-  'postgres: workspace A still has exactly alice as owner'
+  format('select workspace_id, user_id, role, updated_at from public.workspace_members where workspace_id = %L order by user_id', tests.ws_a()),
+  format('select workspace_id, user_id, role, updated_at from members_before where workspace_id = %L order by user_id', tests.ws_a()),
+  'postgres: workspace A memberships are unchanged after bob''s attempts'
 );
 
 select * from finish();

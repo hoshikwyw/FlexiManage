@@ -5,28 +5,7 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 select plan(17);
-
--- ---------------------------------------------------------------------------
--- Helpers (rolled back with the transaction)
--- ---------------------------------------------------------------------------
-create schema tests;
-grant usage on schema tests to anon, authenticated;
-
-create function tests.login_as_anon() returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
-  execute 'set local role anon';
-end;
-$$;
-
-create function tests.logout() returns void
-language plpgsql as $$
-begin
-  execute 'reset role';
-  perform set_config('request.jwt.claims', '', true);
-end;
-$$;
+\ir helpers/tests_schema.sql.inc
 
 select tests.login_as_anon();
 

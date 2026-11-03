@@ -2,42 +2,34 @@
 -- Members read their own workspace's log and nothing else; authenticated can
 -- never insert, update or delete (the log is written by triggers and Edge
 -- Functions only). Covers the four section 7 matrix cells for `audit_events`.
+--
+-- Independent of pre-existing rows: the log is append-only, so "reads exactly
+-- the two creation events" is asserted on workspaces C and D created inside
+-- the transaction by alice and bob; the final intactness check is a delta on
+-- the total captured after the fixtures.
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(15);
+select plan(16);
+\ir helpers/tests_schema.sql.inc
+
+create function tests.ws_c() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-0000000000cc'::uuid $$;
+create function tests.ws_d() returns uuid language sql immutable
+  as $$ select '00000000-0000-0000-0000-0000000000dd'::uuid $$;
 
 -- ---------------------------------------------------------------------------
--- Helpers (rolled back with the transaction)
+-- Fixtures: each seed user creates one workspace as themselves (trigger writes
+-- workspace.created and member.added with the creator as actor).
 -- ---------------------------------------------------------------------------
-create schema tests;
-grant usage on schema tests to anon, authenticated;
+select tests.login_as(tests.alice());
+insert into public.workspaces (id, name, slug, created_by) values (tests.ws_c(), 'Workspace C', 'workspace-c', tests.alice());
+select tests.logout();
+select tests.login_as(tests.bob());
+insert into public.workspaces (id, name, slug, created_by) values (tests.ws_d(), 'Workspace D', 'workspace-d', tests.bob());
+select tests.logout();
 
-create function tests.login_as(p_user_id uuid) returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims',
-    json_build_object('sub', p_user_id, 'role', 'authenticated')::text, true);
-  execute 'set local role authenticated';
-end;
-$$;
-
-create function tests.logout() returns void
-language plpgsql as $$
-begin
-  execute 'reset role';
-  perform set_config('request.jwt.claims', '', true);
-end;
-$$;
-
-create function tests.alice() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000a'::uuid $$;
-create function tests.bob() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000b'::uuid $$;
-create function tests.ws_a() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
-create function tests.ws_b() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000bb'::uuid $$;
+select tests.remember_count('audit_total', (select count(*) from public.audit_events));
 
 -- ---------------------------------------------------------------------------
 -- Alice against Workspace B
@@ -47,12 +39,17 @@ select tests.login_as(tests.alice());
 select is((select count(*)::int from public.audit_events where workspace_id = tests.ws_b()), 0,
   'alice: select of workspace B audit events returns 0 rows');
 select results_eq(
-  format('select action from public.audit_events where workspace_id = %L order by action', tests.ws_a()),
+  format('select action from public.audit_events where workspace_id = %L order by action', tests.ws_c()),
   array['member.added', 'workspace.created'],
-  'alice: reads the two seed audit events of workspace A'
+  'alice: reads exactly the two creation events of the workspace she just created'
 );
-select is((select count(*)::int from public.audit_events where workspace_id <> tests.ws_a()), 0,
-  'alice: sees no audit event outside workspace A');
+select ok(
+  exists (select 1 from public.audit_events where workspace_id = tests.ws_a() and action = 'workspace.created'),
+  'alice: reads the workspace.created event of workspace A');
+select is_empty(
+  format($sql$select workspace_id from public.audit_events
+          except select workspace_id from public.workspace_members where user_id = %L$sql$, tests.alice()),
+  'alice: sees no audit event outside her own workspaces');
 
 select throws_ok(
   format($sql$insert into public.audit_events (workspace_id, actor_id, action, entity_type) values (%L, %L, 'x.y', 'x')$sql$,
@@ -104,9 +101,9 @@ select tests.login_as(tests.bob());
 select is((select count(*)::int from public.audit_events where workspace_id = tests.ws_a()), 0,
   'bob: select of workspace A audit events returns 0 rows');
 select results_eq(
-  format('select action from public.audit_events where workspace_id = %L order by action', tests.ws_b()),
+  format('select action from public.audit_events where workspace_id = %L order by action', tests.ws_d()),
   array['member.added', 'workspace.created'],
-  'bob: reads the two seed audit events of workspace B'
+  'bob: reads exactly the two creation events of the workspace he just created'
 );
 select throws_ok(
   format($sql$insert into public.audit_events (workspace_id, actor_id, action, entity_type) values (%L, %L, 'x.y', 'x')$sql$,
@@ -129,8 +126,8 @@ select throws_ok(
 );
 
 select tests.logout();
-select is((select count(*)::int from public.audit_events), 4,
-  'postgres: the four seed audit events are intact');
+select is((select count(*)::int from public.audit_events), tests.recall_count('audit_total'),
+  'postgres: the denied attempts added or removed no audit event');
 
 select * from finish();
 rollback;

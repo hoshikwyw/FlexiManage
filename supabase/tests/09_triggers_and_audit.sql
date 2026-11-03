@@ -11,58 +11,10 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 select plan(23);
+\ir helpers/tests_schema.sql.inc
 
--- ---------------------------------------------------------------------------
--- Helpers (rolled back with the transaction)
--- ---------------------------------------------------------------------------
-create schema tests;
-grant usage on schema tests to anon, authenticated;
-
-create function tests.login_as(p_user_id uuid) returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims',
-    json_build_object('sub', p_user_id, 'role', 'authenticated')::text, true);
-  execute 'set local role authenticated';
-end;
-$$;
-
-create function tests.logout() returns void
-language plpgsql as $$
-begin
-  execute 'reset role';
-  perform set_config('request.jwt.claims', '', true);
-end;
-$$;
-
-create function tests.rows_affected(p_sql text) returns integer
-language plpgsql as $$
-declare
-  v_count integer;
-begin
-  execute p_sql;
-  get diagnostics v_count = row_count;
-  return v_count;
-end;
-$$;
-
-create function tests.create_user(p_id uuid, p_email text, p_full_name text) returns void
-language plpgsql as $$
-begin
-  insert into auth.users (instance_id, id, aud, role, email, raw_app_meta_data, raw_user_meta_data,
-                          email_confirmed_at, created_at, updated_at)
-  values ('00000000-0000-0000-0000-000000000000', p_id, 'authenticated', 'authenticated', p_email,
-          '{"provider": "email", "providers": ["email"]}'::jsonb,
-          jsonb_build_object('full_name', p_full_name), now(), now(), now());
-end;
-$$;
-
-create function tests.alice() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000a'::uuid $$;
-create function tests.carol() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000c'::uuid $$;
-create function tests.ws_a() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
+-- Every assertion is scoped to workspace C (created here) or to rows written
+-- in this transaction, so pre-existing data does not matter.
 create function tests.ws_c() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-0000000000cc'::uuid $$;
 -- authenticated may not supply invitations.id (003), so the generated id is

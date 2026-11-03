@@ -90,24 +90,26 @@ Add shadcn/ui components with `npx shadcn@latest add <component>`; they land in 
 
 ## Scripts
 
-| Script                    | Description                                                                                                      |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `npm run dev`             | Start the Vite dev server with hot module reload.                                                                |
-| `npm run build`           | Typecheck the app, then build the production bundle into `dist/`.                                                |
-| `npm run preview`         | Serve the production build locally.                                                                              |
-| `npm run typecheck`       | Run `tsc -b` over every project in `tsconfig.json`: app (`src`, incl. co-located tests), node configs, `tests/`. |
-| `npm run lint`            | Run ESLint (flat config) over the whole repository.                                                              |
-| `npm run format`          | Format all files with Prettier.                                                                                  |
-| `npm run format:check`    | Verify formatting without writing (used in CI).                                                                  |
-| `npm run test`            | Run unit and component tests once with Vitest (jsdom).                                                           |
-| `npm run test:watch`      | Run Vitest in watch mode.                                                                                        |
-| `npm run test:e2e`        | Run Playwright end-to-end tests in `tests/e2e` (builds and previews first; see End-to-end tests).                |
-| `npm run test:db`         | Run the pgTAP database tests in `supabase/tests` against the local stack.                                        |
-| `npm run db:start`        | Start the local Supabase stack in Docker (`supabase start`).                                                     |
-| `npm run db:stop`         | Stop the local Supabase stack (`supabase stop`).                                                                 |
-| `npm run db:reset`        | Reset the local Supabase database and re-apply migrations and seed.                                              |
-| `npm run db:types`        | Generate TypeScript types from the local database into `src/types/supabase.ts`.                                  |
-| `npm run functions:serve` | Serve the Edge Functions in `supabase/functions` locally with hot reload (needs the stack running).              |
+| Script                    | Description                                                                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`             | Start the Vite dev server with hot module reload.                                                                                                  |
+| `npm run build`           | Typecheck the app, then build the production bundle into `dist/`.                                                                                  |
+| `npm run preview`         | Serve the production build locally.                                                                                                                |
+| `npm run typecheck`       | Run `tsc -b` over every project in `tsconfig.json`: app (`src`, incl. co-located tests), node configs, `tests/`.                                   |
+| `npm run lint`            | Run ESLint (flat config) over the whole repository.                                                                                                |
+| `npm run format`          | Format all files with Prettier.                                                                                                                    |
+| `npm run format:check`    | Verify formatting without writing (used in CI).                                                                                                    |
+| `npm run test`            | Run unit and component tests once with Vitest (jsdom).                                                                                             |
+| `npm run test:watch`      | Run Vitest in watch mode.                                                                                                                          |
+| `npm run test:e2e`        | Run Playwright end-to-end tests in `tests/e2e` (builds and previews first; see End-to-end tests).                                                  |
+| `npm run test:db`         | Run the pgTAP database tests in `supabase/tests` against the local stack (passes on a fresh or a used database).                                   |
+| `npm run test:db:fresh`   | `db:reset` then `test:db`: the CI-equivalent run against a freshly seeded database.                                                                |
+| `npm run db:start`        | Start the local Supabase stack in Docker (`supabase start`).                                                                                       |
+| `npm run db:dirty`        | Apply `scripts/db/dirty-state.sql` to the local database (extra users, workspaces, invitations, audit rows) to check `test:db` on a used database. |
+| `npm run db:stop`         | Stop the local Supabase stack (`supabase stop`).                                                                                                   |
+| `npm run db:reset`        | Reset the local Supabase database and re-apply migrations and seed.                                                                                |
+| `npm run db:types`        | Generate TypeScript types from the local database into `src/types/supabase.ts`.                                                                    |
+| `npm run functions:serve` | Serve the Edge Functions in `supabase/functions` locally with hot reload (needs the stack running).                                                |
 
 CI helper scripts live in `scripts/ci` and are plain bash (LF):
 
@@ -133,6 +135,7 @@ npm run db:start        # first run pulls images; prints API URL, anon key, Stud
 npm run db:reset        # apply supabase/migrations and supabase/seed.sql from scratch
 npm run db:types        # regenerate src/types/supabase.ts from the local schema
 npm run test:db         # run the RLS / role / trigger tests in supabase/tests (pgTAP)
+npm run test:db:fresh   # db:reset + test:db, what CI runs
 npm run db:stop         # stop the containers
 ```
 

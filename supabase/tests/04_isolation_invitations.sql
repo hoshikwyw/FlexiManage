@@ -2,53 +2,16 @@
 -- One pending invitation per workspace is inserted as postgres inside the
 -- transaction. Covers the four section 7 matrix cells for `invitations` both
 -- ways. Update is denied outright (no grant: accepting is an Edge Function).
+--
+-- Independent of pre-existing rows: assertions are scoped to the two fixture
+-- invitations by id, and visibility is "no invitation outside the caller's
+-- own workspaces" plus the fixture row.
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(18);
+select plan(20);
+\ir helpers/tests_schema.sql.inc
 
--- ---------------------------------------------------------------------------
--- Helpers (rolled back with the transaction)
--- ---------------------------------------------------------------------------
-create schema tests;
-grant usage on schema tests to anon, authenticated;
-
-create function tests.login_as(p_user_id uuid) returns void
-language plpgsql as $$
-begin
-  perform set_config('request.jwt.claims',
-    json_build_object('sub', p_user_id, 'role', 'authenticated')::text, true);
-  execute 'set local role authenticated';
-end;
-$$;
-
-create function tests.logout() returns void
-language plpgsql as $$
-begin
-  execute 'reset role';
-  perform set_config('request.jwt.claims', '', true);
-end;
-$$;
-
-create function tests.rows_affected(p_sql text) returns integer
-language plpgsql as $$
-declare
-  v_count integer;
-begin
-  execute p_sql;
-  get diagnostics v_count = row_count;
-  return v_count;
-end;
-$$;
-
-create function tests.alice() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000a'::uuid $$;
-create function tests.bob() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-00000000000b'::uuid $$;
-create function tests.ws_a() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000aa'::uuid $$;
-create function tests.ws_b() returns uuid language sql immutable
-  as $$ select '00000000-0000-0000-0000-0000000000bb'::uuid $$;
 create function tests.inv_a() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-00000000a001'::uuid $$;
 create function tests.inv_b() returns uuid language sql immutable
@@ -68,11 +31,12 @@ select tests.login_as(tests.alice());
 
 select is((select count(*)::int from public.invitations where workspace_id = tests.ws_b()), 0,
   'alice: select of workspace B invitations returns 0 rows');
-select results_eq(
-  'select id from public.invitations',
-  array[tests.inv_a()],
-  'alice: sees exactly the workspace A invitation'
-);
+select is_empty(
+  format($sql$select workspace_id from public.invitations
+          except select workspace_id from public.workspace_members where user_id = %L$sql$, tests.alice()),
+  'alice: sees no invitation outside her own workspaces');
+select is((select count(*)::int from public.invitations where id = tests.inv_a()), 1,
+  'alice: sees the workspace A invitation');
 
 select throws_ok(
   format($sql$insert into public.invitations (workspace_id, email, invited_by) values (%L, 'x@example.com', %L)$sql$,
@@ -112,8 +76,8 @@ select is(
 select tests.logout();
 select is((select count(*)::int from public.invitations where id = tests.inv_b() and accepted_at is null), 1,
   'postgres: workspace B invitation is untouched after alice''s attempts');
-select is((select count(*)::int from public.invitations), 2,
-  'postgres: both invitations still exist');
+select is((select count(*)::int from public.invitations where id in (tests.inv_a(), tests.inv_b())), 2,
+  'postgres: both fixture invitations still exist');
 
 -- ---------------------------------------------------------------------------
 -- Bob against Workspace A
@@ -122,11 +86,12 @@ select tests.login_as(tests.bob());
 
 select is((select count(*)::int from public.invitations where workspace_id = tests.ws_a()), 0,
   'bob: select of workspace A invitations returns 0 rows');
-select results_eq(
-  'select id from public.invitations',
-  array[tests.inv_b()],
-  'bob: sees exactly the workspace B invitation'
-);
+select is_empty(
+  format($sql$select workspace_id from public.invitations
+          except select workspace_id from public.workspace_members where user_id = %L$sql$, tests.bob()),
+  'bob: sees no invitation outside his own workspaces');
+select is((select count(*)::int from public.invitations where id = tests.inv_b()), 1,
+  'bob: sees the workspace B invitation');
 
 select throws_ok(
   format($sql$insert into public.invitations (workspace_id, email, invited_by) values (%L, 'x@example.com', %L)$sql$,
