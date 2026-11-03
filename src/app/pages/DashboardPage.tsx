@@ -4,12 +4,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton'
 import { useSession } from '@/features/auth/api/use-session'
 import { useProfile } from '@/features/profile/api/use-profile'
+import { ModulesOverview } from '@/features/modules/components/ModulesOverview'
 import { getDisplayName } from '@/features/profile/lib/display-name'
 import { RecentActivity } from '@/features/workspaces/components/RecentActivity'
 import { WorkspaceList } from '@/features/workspaces/components/WorkspaceList'
 import { useCurrentWorkspace } from '@/features/workspaces/context/workspace-context'
 
-/** `/w/:workspaceId`: greeting, the user's workspaces and the current workspace's activity. */
+/** `/w/:workspaceId`: greeting, the workspace's modules, the user's workspaces and recent activity. */
 export function DashboardPage() {
   const { user } = useSession()
   const profile = useProfile()
@@ -47,6 +48,19 @@ export function DashboardPage() {
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Your modules</CardTitle>
+            <CardDescription>
+              {workspace
+                ? `What ${workspace.name} keeps track of.`
+                : 'The modules of the current workspace.'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {workspace ? <ModulesOverview workspaceId={workspace.id} /> : null}
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader>
             <CardTitle>Your workspaces</CardTitle>

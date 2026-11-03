@@ -1,4 +1,5 @@
 import {
+  BoxesIcon,
   LayoutDashboardIcon,
   Settings2Icon,
   UserIcon,
@@ -19,7 +20,8 @@ export interface NavItem {
 }
 
 /**
- * Primary navigation for the current workspace. Empty when the user has no
+ * Primary navigation for the current workspace: Dashboard, Modules, Members
+ * and, for owners and admins, Workspace settings. Empty when the user has no
  * workspace yet (the sidebar then only offers "Create workspace").
  */
 export function getPrimaryNavItems(
@@ -34,6 +36,7 @@ export function getPrimaryNavItems(
       icon: LayoutDashboardIcon,
       end: true,
     },
+    { to: WORKSPACE_ROUTES.modules(workspaceId), label: 'Modules', icon: BoxesIcon },
     { to: WORKSPACE_ROUTES.members(workspaceId), label: 'Members', icon: UsersIcon },
   ]
   if (canManageWorkspace(role)) {

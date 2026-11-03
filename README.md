@@ -55,8 +55,14 @@ Vitest + Testing Library, Playwright, GitHub Actions.
 Sign in as a seed user: `alice@example.com` owns Workspace A, `bob@example.com` owns Workspace B
 (password `password123`). The sidebar switcher lists your workspaces and offers "Create
 workspace"; a user without a workspace lands on `/workspaces/new`. Every workspace page lives
-under `/w/<workspaceId>` (dashboard, `members`, `settings`), so links can be shared with
+under `/w/<workspaceId>` (dashboard, `modules`, `members`, `settings`), so links can be shared with
 co-members.
+
+Modules: `/w/<id>/modules` lists what the workspace tracks (Workspace A ships with "Clients", four
+fields and three records; Workspace B with an empty "Projects"). Owners and admins create a module
+from a template ("Housekeeping tasks" or "Clients") or blank, then manage its fields on the module
+page's Fields tab (add, edit label and required flag, reorder, delete) and rename or delete the
+module under `/w/<id>/modules/<moduleId>/settings`. The Records tab is filled in the next part.
 
 Invite flow: on `/w/<id>/members` an owner or admin invites by email and role; the invitation
 appears under "Pending invitations" with a Revoke button. Email delivery is not wired up yet

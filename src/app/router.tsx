@@ -39,6 +39,9 @@ function lazyPage<K extends string>(load: () => Promise<{ [P in K]: ComponentTyp
  *     workspaces/new           CreateWorkspacePage (first run, or full-page create)
  *     w/:workspaceId           WorkspaceRoute: selects the workspace from the URL, 404 for non-members
  *       (index)                DashboardPage
+ *       modules                ModulesPage (list, create dialog with templates)
+ *       modules/:moduleId      ModulePage (tabs: Records placeholder, Fields)
+ *       modules/:moduleId/settings  ModuleSettingsPage (form, danger zone)
  *       members                MembersPage
  *       settings               WorkspaceSettingsPage
  *     invite/:token            AcceptInvitationPage (sign-in redirect keeps the path)
@@ -120,6 +123,21 @@ export const router = createBrowserRouter([
           {
             index: true,
             element: lazyPage(() => import('@/app/pages/DashboardPage'), 'DashboardPage'),
+          },
+          {
+            path: 'modules',
+            element: lazyPage(() => import('@/features/modules/pages/ModulesPage'), 'ModulesPage'),
+          },
+          {
+            path: 'modules/:moduleId',
+            element: lazyPage(() => import('@/features/modules/pages/ModulePage'), 'ModulePage'),
+          },
+          {
+            path: 'modules/:moduleId/settings',
+            element: lazyPage(
+              () => import('@/features/modules/pages/ModuleSettingsPage'),
+              'ModuleSettingsPage',
+            ),
           },
           {
             path: 'members',

@@ -7,6 +7,10 @@ export const WORKSPACE_ROUTES = {
   dashboard: (workspaceId: string) => `/w/${workspaceId}`,
   members: (workspaceId: string) => `/w/${workspaceId}/members`,
   settings: (workspaceId: string) => `/w/${workspaceId}/settings`,
+  modules: (workspaceId: string) => `/w/${workspaceId}/modules`,
+  module: (workspaceId: string, moduleId: string) => `/w/${workspaceId}/modules/${moduleId}`,
+  moduleSettings: (workspaceId: string, moduleId: string) =>
+    `/w/${workspaceId}/modules/${moduleId}/settings`,
   invite: (token: string) => `/invite/${token}`,
 } as const
 

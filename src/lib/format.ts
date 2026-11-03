@@ -21,3 +21,29 @@ function toDate(iso: string | null | undefined): Date | null {
   const date = new Date(iso)
   return Number.isNaN(date.getTime()) ? null : date
 }
+
+const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
+
+/**
+ * Parses a `YYYY-MM-DD` string as a calendar date (local time, no timezone
+ * shift) and rejects impossible dates such as `2026-02-30`. Returns null for
+ * anything else.
+ */
+export function parseIsoDate(value: unknown): Date | null {
+  if (typeof value !== 'string') return null
+  const match = ISO_DATE_PATTERN.exec(value)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(year, month - 1, day)
+  const valid =
+    date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+  return valid ? date : null
+}
+
+/** "4 Nov 2026" style date for a `YYYY-MM-DD` value. Invalid input renders as an empty string. */
+export function formatDateOnly(value: string | null | undefined): string {
+  const date = parseIsoDate(value)
+  return date ? dateFormatter.format(date) : ''
+}

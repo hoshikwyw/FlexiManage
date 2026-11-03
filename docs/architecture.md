@@ -627,7 +627,8 @@ React SPA (Vite, TypeScript strict, React Router 7, TanStack Query 5, React Hook
 shadcn/ui on Base UI). Maintained by the `frontend-dev` agent. Part 5 (2026-10-30) added the
 authentication screens, the protected routing and the app shell; Part 6 (2026-10-30) added the
 workspaces and members features, the workspace context and the workspace-scoped route map,
-completing Phase 2.
+completing Phase 2. Part 11 (2026-11-04) added the field-type registry and the modules feature
+(list, templates, module page with a Fields tab, settings); Part 12 adds the records table and form.
 
 ### Feature layout
 
@@ -637,10 +638,11 @@ src/app/
   router.tsx           createBrowserRouter: the route map below. Pages are `React.lazy` chunks
                        behind a `Suspense` boundary (`FullPageSpinner`); layouts, guards and the
                        workspace provider stay in the main bundle
-  navigation.ts        getPrimaryNavItems(workspaceId, role) -> Dashboard, Members, Workspace
-                       settings (owner/admin); settingsNavItems -> Profile
+  navigation.ts        getPrimaryNavItems(workspaceId, role) -> Dashboard, Modules, Members,
+                       Workspace settings (owner/admin); settingsNavItems -> Profile
   layouts/             AppLayout (sidebar + header + <Outlet />), SidebarNav, UserMenu, AuthLayout
-  pages/               DashboardPage (greeting, WorkspaceList, RecentActivity), NotFoundPage
+  pages/               DashboardPage (greeting, ModulesOverview, WorkspaceList, RecentActivity),
+                       NotFoundPage
 src/features/auth/
   api/                 useSession, useAuthStateSync, useSignIn, useSignUp, useSignOut,
                        useRequestPasswordReset, useUpdatePassword, useResendConfirmation,
@@ -670,7 +672,9 @@ src/features/workspaces/
                        workspace-routes.ts (WORKSPACE_ROUTES, swapWorkspaceInPath,
                        routeAfterLeavingWorkspace), workspace-storage.ts (localStorage per user),
                        audit-labels.ts (action -> sentence, actor name or "Someone"; invitation
-                       events name the role, never an email: metadata is `invitation_id`, `role`)
+                       events name the role, never an email: metadata is `invitation_id`, `role`;
+                       module.created/updated/deleted and field.created/deleted name the module
+                       or field label)
   context/             workspace-context.ts (WorkspaceContext, useCurrentWorkspace),
                        WorkspaceProvider.tsx
   components/          WorkspaceSwitcher, CreateWorkspaceDialog, CreateWorkspaceForm,
@@ -697,20 +701,72 @@ src/features/members/
   pages/               MembersPage, AcceptInvitationPage
   types.ts             Member (row + profile), FunctionErrorCode, InviteMemberResult,
                        AcceptInvitationResult
+src/features/records/
+  fields/              The field-type registry (section below): types.ts (FieldTypeDefinition,
+                       FieldInputProps), registry.ts (FIELD_TYPE_REGISTRY, getFieldTypeDefinition,
+                       FIELD_TYPE_DEFINITIONS, formatFieldValue), build-record-schema.ts
+                       (buildRecordSchema, buildDefaultValues), field-json.ts (getSelectOptions,
+                       getFieldSettings, toOptionsJson: the only readers of the JSONB columns),
+                       number-input.ts (parseNumberInput, stepForPrecision), inputs/ (one
+                       controlled input per type), RecordFieldControl.tsx (label + registry input +
+                       error wired to React Hook Form), index.ts
+  lib/                 custom-values-errors.ts (parseCustomValuesMessage / parseCustomValuesError
+                       for the 23514 `custom_values.<key>: <reason>` messages,
+                       describeCustomValuesReason)
+src/features/modules/
+  api/                 keys.ts (['modules', ws], ['module', ws, id], ['fields', ws, moduleId],
+                       ['usage', ws]); module-writes.ts (countModules, insertModule, insertField,
+                       deleteModuleRow, deleteFieldRow, createModuleWriter: the raw statements, no
+                       React); useModules(ws) (position then name, plus a field count per module
+                       from a second `field_definitions` select), useModule(ws, id) (maybeSingle:
+                       null = not found or hidden), useCreateModule(ws) (count -> position,
+                       applyTemplate, invalidates list, usage, audit), useUpdateModule(ws, id),
+                       useDeleteModule(ws) (navigate first, invalidate second),
+                       useFieldDefinitions(ws, moduleId) (position order), useCreateField,
+                       useUpdateField (label, required, options, settings only: never key or
+                       type), useDeleteField (also invalidates ['records', ws, moduleId]),
+                       useReorderFields (moveField + one position update per changed row,
+                       optimistic), useWorkspaceUsage(ws) (rpc workspace_usage)
+  schemas/             module.ts (name 1..100, slug as workspaces, description <= 500, icon from
+                       MODULE_ICONS or '', templateId), field.ts (label 1..100, key
+                       ^[a-z][a-z0-9_]{0,49}$, type from FIELD_TYPES, required, options 1..100
+                       with distinct values for select, settings.currency from CURRENCY_CODES,
+                       precision 0..6; fieldFormSchema is one flat form refined by type)
+  lib/                 module-errors.ts (23505 -> slug or key taken, 23514 -> options/settings
+                       check or the field guard messages, 42501 -> forbidden, PGRST116/23503 ->
+                       not found, ModuleNotFoundError/FieldNotFoundError for zero-row writes),
+                       module-permissions.ts (canManageModules o/a), field-key.ts
+                       (deriveFieldKey, deriveOptionValue), field-payload.ts (form -> columns,
+                       strips options/settings the type does not use), field-summary.ts,
+                       module-icons.ts (curated lucide names incl. the seed's building-2),
+                       currencies.ts, module-names.ts (uniqueModuleName -> "(2)" suffix),
+                       templates.ts (section below)
+  components/          ModulesList (+ empty state, skeleton), ModuleCard, ModuleIcon,
+                       ModuleUsageBadge, ModulesOverview (dashboard card), CreateModuleDialog,
+                       CreateModuleForm, TemplatePicker, ModuleSettingsForm, DeleteModuleDialog
+                       (+ ModuleDangerZone), FieldsTab, FieldList (+ skeleton), FieldTypeBadge,
+                       FieldDialog, FieldForm, SelectOptionsEditor, CurrencySettingsFields,
+                       DeleteFieldDialog
+  pages/               ModulesPage, ModulePage (tabs), ModuleSettingsPage, ModuleNotFound
+  types.ts             ModuleSummary (Module + fieldCount)
 src/components/shared/ FullPageSpinner, RouteErrorBoundary, FormTextField, FormSelectField,
-                       FormServerError, SubmitButton, RoleBadge
+                       FormTextareaField, FormCheckboxField, FormServerError, SubmitButton,
+                       RoleBadge
 src/components/ui/     shadcn/ui (button, card, input, label, field, dropdown-menu, avatar,
                        separator, sheet, sonner, skeleton, dialog, alert-dialog, badge, table,
-                       native-select)
+                       native-select, checkbox, textarea, tabs)
 src/lib/supabase.ts    createClient<Database>(anon key, PKCE, detectSessionInUrl: false)
-src/lib/               format.ts (formatDate/formatDateTime), postgrest-errors.ts
-                       (isPostgrestError, isNetworkError), workspace-roles.ts (getRoleLabel)
+src/lib/               format.ts (formatDate/formatDateTime for timestamps; parseIsoDate and
+                       formatDateOnly for `YYYY-MM-DD` values, parsed as local calendar dates so
+                       they never shift by a day), postgrest-errors.ts (isPostgrestError,
+                       isNetworkError), workspace-roles.ts (getRoleLabel)
 src/types/database.ts  Row aliases: Profile, Workspace, WorkspaceMember, Invitation, AuditEvent,
                        WorkspaceRole, WORKSPACE_ROLES; migration 004: Module, FieldDefinition,
                        RecordRow (+ Insert/Update), FieldType, FIELD_TYPES, SelectOption,
                        FieldSettings, WorkspaceUsage
 src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts (auth, from,
                        functions.invoke), workspace-context.tsx (stubbed WorkspaceProvider value),
+                       fields.ts (createTestField, createTestModule, createClientsFields),
                        vitest-env.d.ts
 ```
 
@@ -828,6 +884,85 @@ exists; the caller may not change it), keeping `not_found` for genuine by-id rea
 4. Revoking is a direct delete under RLS (`useRevokeInvitation`); the trigger writes
    `invitation.revoked`, which the dashboard's "Recent activity" shows through `audit-labels.ts`.
 
+### Field-type registry (`src/features/records/fields/`)
+
+`FIELD_TYPE_REGISTRY: Record<FieldType, FieldTypeDefinition>` is the single place that knows
+the six types. Each definition has `type`, `label`, `description`, `icon` (lucide),
+`defaultValue`, `zodSchema(field)`, `formatValue(value, field)`, optional `parseInput` and
+`InputComponent`. Components never switch on `field.type`; they call
+`getFieldTypeDefinition(type)` (the badge, the type picker, the form control) or
+`formatFieldValue(value, field)` (table cells). Adding a type means one registry entry plus the
+database enum value.
+
+- **Stored values** are what `records.custom_values` holds and what the schemas validate: text
+  `string` (trimmed, <= 2,000), number and currency `number` (finite; `settings.precision` caps
+  the decimals, currency defaults to 2), date `YYYY-MM-DD` string (checked as a real calendar
+  date), select one of `options[].value`, checkbox `boolean`. Inputs emit stored values, not DOM
+  strings: the number input parses (`parseNumberInput`: empty -> null, unparsable -> the raw
+  string so the schema reports it), the date and select inputs turn `''` into `null`.
+- **Required** makes the schema non-optional and non-empty (`''`, `null` and `undefined` all read
+  as "This field is required", `REQUIRED_MESSAGE`); optional fields accept `null`/`undefined`
+  (`.nullish()`). A required checkbox accepts `false`, matching
+  `validate_record_custom_values()`.
+- **`buildRecordSchema(fields)`** returns `z.strictObject({ [key]: schema })` in field order;
+  unknown keys fail client-side exactly as `custom_values.<key>: unknown field` does on the
+  server. `buildDefaultValues(fields)` gives a new record's starting values (text `''`, checkbox
+  `false`, the rest `null`).
+- **Formatting**: currency uses `Intl.NumberFormat` with `settings.currency` and precision (plain
+  decimal when the code is missing or invalid), number uses the precision (max 6 decimals when
+  unset), date goes through `formatDateOnly`, checkbox is Yes/No, select shows the option label
+  or `<value> (removed option)` when the option is gone (B1). Missing values render as `''`.
+- **`RecordFieldControl`** (`control`, `name`, `field`) renders label (with a required marker),
+  the registry input, description and inline error through `useController`, so Part 12's form is
+  a `useForm` over `buildRecordSchema` plus one `RecordFieldControl` per field under
+  `custom_values.<key>`. `SelectFieldInput` keeps a removed-option value selectable (marked) until
+  the user picks something else.
+- **Server errors**: `parseCustomValuesError(error)` turns a 23514 `custom_values.<key>: <reason>`
+  message into `{ key?, reason }` (regex `^custom_values(?:\.([a-z][a-z0-9_]*))?: (.+)$`);
+  `describeCustomValuesReason` maps the documented reasons to the same copy the Zod schemas use,
+  so Part 12 can `setError(`custom_values.${key}`, ...)` and show one message style.
+
+### Modules feature (`src/features/modules/`)
+
+- **Writes go to the tables directly** under RLS (`modules_*`, `field_definitions_*` policies:
+  members read, owners and admins write); no Edge Function is involved because the database
+  writes the audit rows (`module.created/updated/deleted`, `field.created/deleted`) and enforces
+  every rule (slug unique per workspace, key immutable, type frozen while records hold values,
+  options still in use, the options/settings shapes). The hooks only map errors
+  (`getModuleErrorMessage`) and never offer what the server forbids: `FieldDialog` locks `key`
+  and `type` on edit with a hint, and `useUpdateField` does not even accept them.
+- **Zero-row writes** (`.delete().select('id')` returning nothing, `.update().single()` giving
+  `PGRST116`) are reported as not-found/forbidden exactly like the workspaces hooks.
+  `useModule` uses `.maybeSingle()` so an id from another workspace renders the generic "Module
+  not found" page (no detail about existence).
+- **Positions**: a new module gets `position = count` (one `head: true` count query), a new
+  field `position = fields.length` from the loaded list. Reordering (`moveField`) renumbers
+  0..n-1 and issues one `update position` per changed row (PostgREST has no batch update; fields
+  are capped at 50), optimistically updating `['fields', ws, moduleId]`.
+- **Templates (B6)** live in `lib/templates.ts` as versioned code: `BLANK_TEMPLATE`,
+  `HOUSEKEEPING_TASKS_TEMPLATE` (the D1 default, 8 fields) and `CLIENTS_TEMPLATE` (mirrors the
+  seed). `applyTemplate(writer, template, module)` takes a `ModuleWriter`
+  (`createModule`, `createField`, `deleteModule`), creates the module and then its fields in
+  order, and on any field failure deletes the module again (best effort, fields cascade) and
+  rethrows. `useCreateModule` binds the writer to Supabase (`createModuleWriter`) and runs the
+  blank template for a manual create, so there is exactly one creation path for Phase 4's
+  `check_entitlement`. The sequence is not one transaction (the only deviation from B6);
+  supabase-engineer can provide `create_module_with_fields(...)` later and swap the writer.
+  `TemplatePicker` shows each template's fields read-only; `uniqueModuleName` suffixes "(2)"
+  when the template's name is taken. The database's `module.created` metadata is `{ name, slug }`
+  (no `template` key); the client adds no audit row.
+- **Select options** carry a stable `value` (what records store) and a `label`.
+  `SelectOptionsEditor` derives the value from the label for options added in the dialog and
+  freezes it for options that already existed, so relabelling keeps records valid; removing an
+  option that records use fails server-side and is shown as "Option "x" is still used by
+  records".
+- **Permissions**: `canManageModules(role)` (owner, admin) only hides controls: the "New module"
+  button, the Manage links, the Add/Edit/Move/Delete field actions, the settings form and the
+  danger zone. Members see the modules list, the module page and the fields read-only.
+- **Dashboard** gets a "Your modules" card (`ModulesOverview`); the sidebar gets "Modules".
+  `ModuleUsageBadge` shows `workspace_usage().modules` and is where Phase 4 appends the plan
+  limit.
+
 ### Route map
 
 | Path                      | Guard             | Element                                                                  |
@@ -841,6 +976,9 @@ exists; the caller may not change it), keeping `not_found` for genuine by-id rea
 | `/`                       | `ProtectedRoute`  | `WorkspaceProvider` > `AppLayout` > `RootRedirect` (-> `/w/<current>` or `/workspaces/new`) |
 | `/workspaces/new`         | `ProtectedRoute`  | `AppLayout` > `CreateWorkspacePage` (first-run page; also reachable with workspaces) |
 | `/w/:workspaceId`         | `ProtectedRoute`  | `AppLayout` > `WorkspaceRoute` > `DashboardPage` (workspaces list, recent activity) |
+| `/w/:workspaceId/modules` | `ProtectedRoute`  | `WorkspaceRoute` > `ModulesPage` (cards with field count, usage badge, "New module" o/a, template empty state) |
+| `/w/:workspaceId/modules/:moduleId` | `ProtectedRoute` | `WorkspaceRoute` > `ModulePage` (tabs via `?tab=`: Records placeholder until Part 12, Fields: list; add/edit/reorder/delete o/a) |
+| `/w/:workspaceId/modules/:moduleId/settings` | `ProtectedRoute` | `WorkspaceRoute` > `ModuleSettingsPage` (name, slug, description, icon; danger zone o/a with typed-name delete) |
 | `/w/:workspaceId/members` | `ProtectedRoute`  | `WorkspaceRoute` > `MembersPage` (table, invite form o/a, pending invitations o/a) |
 | `/w/:workspaceId/settings`| `ProtectedRoute`  | `WorkspaceRoute` > `WorkspaceSettingsPage` (general form; danger zone for owners) |
 | `/invite/:token`          | `ProtectedRoute`  | `AppLayout` > `AcceptInvitationPage`                                     |
@@ -850,7 +988,10 @@ exists; the caller may not change it), keeping `not_found` for genuine by-id rea
 `ProtectedRoute` redirects to `/auth/sign-in?redirectTo=<path+search>`; `getSafeRedirect` only
 honours same-origin paths outside `/auth/`. Both route groups have `RouteErrorBoundary` as
 `errorElement`. A non-member visiting `/w/<id>` gets `WorkspaceRoute`'s not-found page (RLS
-returns nothing for that id either way, so existence is not revealed).
+returns nothing for that id either way, so existence is not revealed); a module id from another
+workspace under a workspace the user belongs to gets `ModuleNotFound` for the same reason. The
+Epic B proposal's `/modules/new` is a dialog on the list instead; `/records/new` and
+`/records/:recordId` are Part 12.
 
 ## Still to come
 
@@ -870,7 +1011,12 @@ returns nothing for that id either way, so existence is not revealed).
 - Part 10 (done 2026-11-03): migration 004 (`modules`, `field_definitions`, `records`, search,
   `workspace_usage`), tests `13_isolation_modules` through `18_search_and_usage`, seed content.
   Suite: 18 files, 681 tests, passing on a fresh and on a used database.
-- Phase 3, still open: `attachments` table and storage bucket (Part 13); Edge Function
-  `export-records`.
+- Part 11 (done 2026-11-04): field-type registry, `buildRecordSchema`, custom-values error
+  parser, modules feature (list, templates, module page with Fields tab, settings, delete),
+  "Modules" navigation and dashboard card, audit labels for module and field events. Vitest:
+  37 files, 224 tests.
+- Phase 3, still open: records table and form (Part 12, on top of the registry), `attachments`
+  table and storage bucket (Part 13); Edge Function `export-records`; a transactional
+  `create_module_with_fields` for templates (optional, see the modules section).
 - Phase 4: billing tables, `check_entitlement` (on top of `workspace_usage`), `create-workspace`,
   the record-audit and record-ownership decisions.

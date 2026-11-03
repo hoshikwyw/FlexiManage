@@ -126,13 +126,13 @@ Agents: supabase-engineer, frontend-dev, test-engineer, code-reviewer.
 - [x] Migration 004 (done 2026-11-03): `modules`, `field_definitions`, `records` (structured core + `custom_values jsonb`) with RLS, validation and audit (supabase-engineer). `attachments` moves to the storage migration below.
 - [ ] Storage bucket `attachments` with path policy `{workspace_id}/{record_id}/{file}` (supabase-engineer).
 - [x] (done 2026-11-03) Full-text and trigram search on records scoped by workspace (supabase-engineer).
-- [ ] Field-type registry: text, number, date, select, checkbox, currency (frontend-dev).
-- [ ] Module settings page: define fields, order, required flag (frontend-dev).
+- [x] (done 2026-11-04) Field-type registry: text, number, date, select, checkbox, currency (frontend-dev). `src/features/records/fields/` with `buildRecordSchema` for Part 12.
+- [x] (done 2026-11-04) Module settings page: define fields, order, required flag (frontend-dev). Modules list, create dialog, module page (Records placeholder + Fields tab), settings page with danger zone.
 - [ ] Records table with sorting, filters, pagination and search (frontend-dev).
 - [ ] Record create and edit form generated from field definitions (frontend-dev).
 - [ ] Attachment upload and download on a record (frontend-dev).
 - [ ] CSV export via Edge Function `export-records` with audit event (supabase-engineer).
-- [ ] Module templates (added 2026-11-03, Epic B6): templates shipped as code under `src/features/modules`, "Blank" and the D1 default module; "start from a template" on an empty workspace; atomic create of module plus fields (frontend-dev, supabase-engineer).
+- [x] (done 2026-11-04, frontend part) Module templates (added 2026-11-03, Epic B6): templates shipped as code under `src/features/modules/lib/templates.ts` ("Blank", "Housekeeping tasks" = D1 default, "Clients"); "start from a template" on an empty modules list and in "New module". Open for supabase-engineer: the create is sequential (module insert, then field inserts, best-effort delete on failure), not one transaction; a `create_module_with_fields` SQL function or Edge Function can replace `applyTemplate`'s writer without touching the UI.
 - [ ] Unit tests for field registry and Zod schema generation; component tests for form and table (test-engineer).
 - [ ] Playwright primary journey (test-engineer).
 - [ ] Code review of each feature before merge (code-reviewer).

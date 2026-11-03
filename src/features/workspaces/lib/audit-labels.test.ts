@@ -37,6 +37,28 @@ describe('describeAuditAction', () => {
       { from: 'member', to: 'admin' },
       "changed a member's role from member to admin",
     ],
+    ['module.created', { name: 'Rooms', slug: 'rooms' }, 'created the module "Rooms"'],
+    [
+      'module.updated',
+      { from: { name: 'Rooms', slug: 'rooms' }, to: { name: 'Rooms 2', slug: 'rooms' } },
+      'renamed the module "Rooms" to "Rooms 2"',
+    ],
+    [
+      'module.updated',
+      { from: { name: 'Rooms', slug: 'rooms' }, to: { name: 'Rooms', slug: 'rooms-2' } },
+      'updated the module "Rooms"',
+    ],
+    ['module.deleted', { name: 'Rooms', slug: 'rooms' }, 'deleted the module "Rooms"'],
+    [
+      'field.created',
+      { module_id: 'm', key: 'vendor', type: 'text', label: 'Vendor' },
+      'added the field "Vendor"',
+    ],
+    [
+      'field.deleted',
+      { module_id: 'm', key: 'vendor', type: 'text' },
+      'deleted the field "vendor"',
+    ],
   ])('labels %s', (action, metadata, expected) => {
     expect(describeAuditAction(event({ action, metadata, entity_id: 'x' }))).toBe(expected)
   })

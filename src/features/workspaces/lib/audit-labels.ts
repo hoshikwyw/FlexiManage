@@ -15,6 +15,12 @@ function text(value: unknown, fallback: string): string {
   return typeof value === 'string' && value ? value : fallback
 }
 
+function nested(value: unknown): Metadata {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Metadata)
+    : {}
+}
+
 /** `(role)` suffix when the metadata names a role, otherwise nothing. */
 function roleSuffix(value: unknown): string {
   return typeof value === 'string' && value ? ` (${value})` : ''
@@ -46,6 +52,24 @@ export function describeAuditAction(event: AuditEventWithActor): string {
       return 'revoked an invitation'
     case 'invitation.accepted':
       return `joined via invitation${roleSuffix(m.role)}`
+    // Migration 004: module and field definition events.
+    case 'module.created':
+      return `created the module "${text(m.name, 'Untitled')}"`
+    case 'module.updated': {
+      const from = nested(m.from)
+      const to = nested(m.to)
+      const fromName = text(from.name, '')
+      const toName = text(to.name, '')
+      return fromName && toName && fromName !== toName
+        ? `renamed the module "${fromName}" to "${toName}"`
+        : `updated the module "${text(to.name, 'Untitled')}"`
+    }
+    case 'module.deleted':
+      return `deleted the module "${text(m.name, 'Untitled')}"`
+    case 'field.created':
+      return `added the field "${text(m.label, text(m.key, 'untitled'))}"`
+    case 'field.deleted':
+      return `deleted the field "${text(m.label, text(m.key, 'untitled'))}"`
     default:
       return event.action
   }
