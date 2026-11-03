@@ -13,10 +13,12 @@ interface ModuleCardProps {
   module: ModuleSummary
   /** Show the "Manage" link (owner/admin). */
   canManage: boolean
+  /** Number of records; undefined while loading or when the count failed. */
+  recordCount?: number
 }
 
-/** One module: icon, name, description, field count, record count (Part 12) and links. */
-export function ModuleCard({ workspaceId, module, canManage }: ModuleCardProps) {
+/** One module: icon, name, description, field and record counts, and links. */
+export function ModuleCard({ workspaceId, module, canManage, recordCount }: ModuleCardProps) {
   return (
     <Card data-module-id={module.id} className="flex flex-col">
       <CardHeader>
@@ -41,9 +43,13 @@ export function ModuleCard({ workspaceId, module, canManage }: ModuleCardProps) 
           </div>
           <div className="flex gap-1">
             <dt>Records</dt>
-            <dd className="text-foreground font-medium" aria-label="Record count not available yet">
-              —
-            </dd>
+            {recordCount === undefined ? (
+              <dd className="text-foreground font-medium" aria-label="Record count not available">
+                —
+              </dd>
+            ) : (
+              <dd className="text-foreground font-medium">{recordCount.toLocaleString()}</dd>
+            )}
           </div>
         </dl>
         <div className="flex gap-2">

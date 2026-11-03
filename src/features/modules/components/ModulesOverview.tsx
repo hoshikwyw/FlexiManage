@@ -3,14 +3,16 @@ import { Link } from 'react-router-dom'
 
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useRecordCounts } from '@/features/records/api/use-record-counts'
 import { WORKSPACE_ROUTES } from '@/features/workspaces/lib/workspace-routes'
 
 import { useModules } from '../api/use-modules'
 import { ModuleIcon } from './ModuleIcon'
 
-/** Dashboard card body: the workspace's modules as links, plus a link to the list. */
+/** Dashboard card body: the workspace's modules as links (field and record counts), plus a link to the list. */
 export function ModulesOverview({ workspaceId }: { workspaceId: string }) {
   const modules = useModules(workspaceId)
+  const recordCounts = useRecordCounts(workspaceId)
 
   if (modules.isPending) {
     return (
@@ -42,6 +44,7 @@ export function ModulesOverview({ workspaceId }: { workspaceId: string }) {
       ) : (
         <ul className="flex flex-col gap-1" aria-label="Your modules">
           {modules.data.map((module) => {
+            const records = recordCounts.data?.[module.id]
             return (
               <li key={module.id}>
                 <Link
@@ -57,6 +60,9 @@ export function ModulesOverview({ workspaceId }: { workspaceId: string }) {
                   </span>
                   <span className="text-muted-foreground shrink-0 text-xs">
                     {module.fieldCount} {module.fieldCount === 1 ? 'field' : 'fields'}
+                    {records === undefined
+                      ? null
+                      : ` · ${records.toLocaleString()} ${records === 1 ? 'record' : 'records'}`}
                   </span>
                 </Link>
               </li>

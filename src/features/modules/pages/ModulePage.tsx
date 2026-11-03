@@ -4,6 +4,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { RecordsTab } from '@/features/records/components/RecordsTab'
 import { useCurrentWorkspace } from '@/features/workspaces/context/workspace-context'
 import { WORKSPACE_ROUTES } from '@/features/workspaces/lib/workspace-routes'
 
@@ -20,7 +21,7 @@ function isTab(value: string | null): value is Tab {
   return value !== null && (TABS as readonly string[]).includes(value)
 }
 
-/** `/w/:workspaceId/modules/:moduleId`: header plus Records (Part 12) and Fields tabs. */
+/** `/w/:workspaceId/modules/:moduleId`: header plus Records (table, search, filters) and Fields tabs. */
 export function ModulePage() {
   const { moduleId } = useParams<{ moduleId: string }>()
   const { workspace, role } = useCurrentWorkspace()
@@ -93,9 +94,7 @@ export function ModulePage() {
           <TabsTrigger value="fields">Fields</TabsTrigger>
         </TabsList>
         <TabsContent value="records">
-          <p className="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
-            Records view arrives in the next part.
-          </p>
+          <RecordsTab workspaceId={workspace.id} moduleId={module.data.id} />
         </TabsContent>
         <TabsContent value="fields">
           <FieldsTab workspaceId={workspace.id} moduleId={module.data.id} canManage={canManage} />

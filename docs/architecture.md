@@ -628,7 +628,8 @@ shadcn/ui on Base UI). Maintained by the `frontend-dev` agent. Part 5 (2026-10-3
 authentication screens, the protected routing and the app shell; Part 6 (2026-10-30) added the
 workspaces and members features, the workspace context and the workspace-scoped route map,
 completing Phase 2. Part 11 (2026-11-04) added the field-type registry and the modules feature
-(list, templates, module page with a Fields tab, settings); Part 12 adds the records table and form.
+(list, templates, module page with a Fields tab, settings); Part 12 (2026-11-04) added the records
+list (search, filters, sort, pagination in the URL), the record form and the record pages.
 
 ### Feature layout
 
@@ -712,7 +713,30 @@ src/features/records/
                        error wired to React Hook Form), index.ts
   lib/                 custom-values-errors.ts (parseCustomValuesMessage / parseCustomValuesError
                        for the 23514 `custom_values.<key>: <reason>` messages,
-                       describeCustomValuesReason)
+                       describeCustomValuesReason), records-query.ts (URL <-> RecordsQuery:
+                       parseRecordsQuery, serialiseRecordsQuery, withFilter, withoutCriteria,
+                       nextSort, hasActiveCriteria), records-filters.ts (applyRecordsQuery over a
+                       structural builder: search, filters, sort; buildPrefixTsQuery, escapeLike),
+                       record-values.ts (compactCustomValues, diffRecordPayload), record-errors.ts
+                       (getRecordErrorMessage, mapRecordSaveError, RecordNotFoundError),
+                       filter-labels.ts (chip text), pagination.ts (describePageRange, lastPage)
+  api/                 keys.ts (['records', ws, moduleId, 'list', query], [..., 'detail', id],
+                       ['records', ws, 'counts']); record-queries.ts (fetchRecords, countRecords,
+                       fetchRecord, fetchRecordCounts, RECORD_COLUMNS); useRecords, useRecord,
+                       useRecordCounts, useCreateRecord, useUpdateRecord, useDeleteRecord,
+                       invalidate.ts (lists + counts + ['usage', ws])
+  schemas/record.ts    buildRecordFormSchema(fields) (title 1..200, status <= 50, custom_values =
+                       buildRecordSchema), emptyRecordFormValues, recordToFormValues,
+                       toRecordPayload, missingRequiredFields
+  hooks/               useRecordsUrlState(fields) (useSearchParams <-> RecordsQuery, replace)
+  components/          RecordsTab (+ RecordsList), RecordsToolbar, filters/ (FILTER_CONTROLS per
+                       registry filterKind: Text, Options, Boolean, NumberRange, DateRange),
+                       RecordsTable, RecordsTableStates (skeleton, error, "No records yet",
+                       "No records match"), RecordsPagination, RecordForm, DiscardChangesDialog,
+                       RecordDetail, DeleteRecordDialog
+  pages/               NewRecordPage, RecordPage (read / ?edit=1, RecordNotFound), RecordPageShell
+                       (module + fields loading, breadcrumb)
+  types.ts             RecordItem, RecordsQuery, RecordFilter, RecordSort, PageSize, RecordsPage
 src/features/modules/
   api/                 keys.ts (['modules', ws], ['module', ws, id], ['fields', ws, moduleId],
                        ['usage', ws]); module-writes.ts (countModules, insertModule, insertField,
@@ -741,7 +765,8 @@ src/features/modules/
                        module-icons.ts (curated lucide names incl. the seed's building-2),
                        currencies.ts, module-names.ts (uniqueModuleName -> "(2)" suffix),
                        templates.ts (section below)
-  components/          ModulesList (+ empty state, skeleton), ModuleCard, ModuleIcon,
+  components/          ModulesList (+ empty state, skeleton), ModuleCard (field and record
+                       counts), ModuleIcon,
                        ModuleUsageBadge, ModulesOverview (dashboard card), CreateModuleDialog,
                        CreateModuleForm, TemplatePicker, ModuleSettingsForm, DeleteModuleDialog
                        (+ ModuleDangerZone), FieldsTab, FieldList (+ skeleton), FieldTypeBadge,
@@ -767,6 +792,7 @@ src/types/database.ts  Row aliases: Profile, Workspace, WorkspaceMember, Invitat
 src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts (auth, from,
                        functions.invoke), workspace-context.tsx (stubbed WorkspaceProvider value),
                        fields.ts (createTestField, createTestModule, createClientsFields),
+                       query-builder-mock.ts (chainable PostgREST builder that records calls),
                        vitest-env.d.ts
 ```
 
@@ -891,7 +917,9 @@ the six types. Each definition has `type`, `label`, `description`, `icon` (lucid
 `defaultValue`, `zodSchema(field)`, `formatValue(value, field)`, optional `parseInput` and
 `InputComponent`. Components never switch on `field.type`; they call
 `getFieldTypeDefinition(type)` (the badge, the type picker, the form control) or
-`formatFieldValue(value, field)` (table cells). Adding a type means one registry entry plus the
+`formatFieldValue(value, field)` (table cells). Each entry also declares its `filterKind`
+(`text`, `number-range`, `date-range`, `options`, `boolean`), which picks the records filter
+control and the PostgREST operator. Adding a type means one registry entry plus the
 database enum value.
 
 - **Stored values** are what `records.custom_values` holds and what the schemas validate: text
@@ -963,6 +991,95 @@ database enum value.
   `ModuleUsageBadge` shows `workspace_usage().modules` and is where Phase 4 appends the plan
   limit.
 
+### Records feature (`src/features/records/`)
+
+Any member creates, edits and deletes records (RLS `records_*_member`); the UI does no role
+gating. All reads are plain selects on `records` with `.eq('workspace_id')` and
+`.eq('module_id')`, so a non-member's list, count and search are empty under RLS.
+
+**URL contract** (`lib/records-query.ts`, unit-tested both ways):
+
+```
+?q=<search>&page=<n>&size=<25|50|100>&sort=<title|created_at|updated_at|status|f.<key>>&dir=<asc|desc>
+ &f.<key>=<filter value>
+```
+
+Defaults (page 1, size 25, `updated_at desc`, no search or filters) are omitted when writing.
+Custom fields sort as `f.<key>` so a field keyed `status` or `title` never collides with the
+core column. Filter values: text `f.company=acme`; select repeats the parameter
+(`f.status=lead&f.status=active`, any of them); checkbox `true`/`false`; number, currency and
+date `min..max` with either side optional (`f.value=100..`, `f.due=..2026-12-31`). Parsing never
+throws: invalid page/size/sort/dir fall back to the defaults, filters on unknown keys and invalid
+values (unknown options, impossible dates, non-numbers) are dropped, search is capped at 200
+characters. Other parameters (`tab`) survive. `useRecordsUrlState` writes with `replace` and
+skips no-op writes; search and filter changes reset the page to 1; the search box is local state
+written to the URL 300 ms after the last keystroke.
+
+**Query building** (`lib/records-filters.ts`, applied in `api/record-queries.ts`):
+
+- Select: explicit `RECORD_COLUMNS` (every column except the `search_vector` tsvector),
+  `{ count: 'exact' }`, `.range(from, to)` with the page size capped at 100.
+- Search: the term's runs of letters, marks and digits become `word:*` joined with ` & ` (max 8
+  words, lowercased, deduplicated) and go to
+  `.textSearch('search_vector', q, { config: 'simple' })`. Quotes, colons, ampersands and other
+  tsquery syntax are dropped, so input can never form query syntax. A term without word
+  characters falls back to `.ilike('title', '%term%')` with backslash, `%` and `_` escaped.
+- Filters (AND): text `.ilike('custom_values->>key', '%v%')`; one select option
+  `.contains('custom_values', { key: v })` (GIN `jsonb_path_ops` index), several
+  `.in('custom_values->>key', [...])`; checkbox `.contains('custom_values', { key: true|false })`;
+  number and currency `.gte/.lte('custom_values->key', n)` (the `->` operator keeps jsonb, and
+  jsonb compares numbers numerically, verified against the local PostgREST 16.5; no cast needed);
+  date `.gte/.lte('custom_values->>key', 'YYYY-MM-DD')` (ISO dates order correctly as text).
+- Sort: core columns directly; fields by `order('custom_values->key')` (jsonb ordering: numbers
+  numerically, strings by collation, `false` before `true`), always `nullsFirst: false`, then
+  `id` as a tie-breaker so pages never overlap.
+- Out-of-range page (`PGRST103`, HTTP 416): `fetchRecords` runs a head-only count with the same
+  criteria and returns `outOfRange`; the tab jumps to the last page.
+- Counts per module (`useRecordCounts`): one `head: true` exact count per module in parallel
+  (module ids from the cached modules list). Cheap for the MVP's few modules; a grouped count
+  view or RPC can replace it later. The Modules cards and the dashboard card show it.
+
+**Documented limitations:**
+
+- Select fields sort by the stored option value, not by label (B3 asks for label order; needs a
+  SQL function or view).
+- A "max only" numeric range also matches a stored JSON `null` (jsonb null sorts below numbers).
+  The app never stores nulls (`compactCustomValues` drops `null` and `''` before writing); only
+  other writers could.
+- Checkbox filters ignore records without a value (they are neither true nor false).
+- PostgREST turns `*` in an ilike pattern into a wildcard, so a literal `*` in a text filter
+  matches anything at that position.
+- Search matches tokens by prefix only: `ops@acme.example` is one email token, so "acme" does
+  not find it; "1234.5" becomes `1234:* & 5:*`. A 1-character term already searches (B3 says 2).
+
+**Writes:** `useCreateRecord` is the only insert path (Phase 4 hook for `check_entitlement`).
+`useUpdateRecord` sends only the changed columns of `title`, `status`, `custom_values`
+(`diffRecordPayload`), so a title-only edit of a stale record still succeeds server-side;
+`.single()` turns a vanished row into `PGRST116`. `useDeleteRecord` selects the deleted id and
+throws `RecordNotFoundError` on zero rows. Create and delete invalidate the module's lists,
+`['records', ws, 'counts']` and `['usage', ws]`; update refreshes the detail cache and the lists;
+`useDeleteField` already invalidates `['records', ws, moduleId]`.
+
+**Form:** `RecordForm` is a `useForm` over `buildRecordFormSchema(fields)` (title, "Record
+status" free text, one `RecordFieldControl` per field under `custom_values.<key>`). On a rejected
+save, `mapRecordSaveError` puts a 23514 `custom_values.<key>: <reason>` onto that field
+(`setError`, focused) with a form-level summary; 42501 shows the forbidden copy, everything else
+a form-level message in `FormServerError`. If the key is not a field the form renders (a required
+field was added in another tab), the form says the fields changed and invalidates
+`['fields', ws, moduleId]`; the new control appears with the error on it. A stale record (a
+required field added after it was created) is flagged in the read view ("Required field without
+a value: Region") and the edit form requires the value. Cancel with unsaved changes asks
+"Discard unsaved changes?"; closing the tab triggers `beforeunload`. A module without fields
+shows an explanation and no submit button on "New record" (B2).
+
+**Deviations from the Epic B text:** the record label is the `title` column (migration 004), not
+the first field's value; the free-text core `status` is labelled "Record status" in the form so it
+is not confused with a custom field named Status.
+
+**Slots for Parts 13-14:** `RecordDetail` has an "Attachments" section placeholder,
+`RecordForm` a commented upload slot, `RecordsTab` a commented "Export CSV" slot next to "New
+record", and `useDeleteRecord` is where attachment rows and storage objects join the delete.
+
 ### Route map
 
 | Path                      | Guard             | Element                                                                  |
@@ -977,7 +1094,9 @@ database enum value.
 | `/workspaces/new`         | `ProtectedRoute`  | `AppLayout` > `CreateWorkspacePage` (first-run page; also reachable with workspaces) |
 | `/w/:workspaceId`         | `ProtectedRoute`  | `AppLayout` > `WorkspaceRoute` > `DashboardPage` (workspaces list, recent activity) |
 | `/w/:workspaceId/modules` | `ProtectedRoute`  | `WorkspaceRoute` > `ModulesPage` (cards with field count, usage badge, "New module" o/a, template empty state) |
-| `/w/:workspaceId/modules/:moduleId` | `ProtectedRoute` | `WorkspaceRoute` > `ModulePage` (tabs via `?tab=`: Records placeholder until Part 12, Fields: list; add/edit/reorder/delete o/a) |
+| `/w/:workspaceId/modules/:moduleId` | `ProtectedRoute` | `WorkspaceRoute` > `ModulePage` (tabs via `?tab=`: Records: toolbar, table, pagination with the URL contract above; Fields: list; add/edit/reorder/delete o/a) |
+| `/w/:workspaceId/modules/:moduleId/records/new` | `ProtectedRoute` | `WorkspaceRoute` > `NewRecordPage` (form; no-fields notice) |
+| `/w/:workspaceId/modules/:moduleId/records/:recordId` | `ProtectedRoute` | `WorkspaceRoute` > `RecordPage` (read view, delete dialog; `?edit=1` edit form; "Record not found" for unknown ids and ids of another module or workspace) |
 | `/w/:workspaceId/modules/:moduleId/settings` | `ProtectedRoute` | `WorkspaceRoute` > `ModuleSettingsPage` (name, slug, description, icon; danger zone o/a with typed-name delete) |
 | `/w/:workspaceId/members` | `ProtectedRoute`  | `WorkspaceRoute` > `MembersPage` (table, invite form o/a, pending invitations o/a) |
 | `/w/:workspaceId/settings`| `ProtectedRoute`  | `WorkspaceRoute` > `WorkspaceSettingsPage` (general form; danger zone for owners) |
@@ -990,8 +1109,8 @@ honours same-origin paths outside `/auth/`. Both route groups have `RouteErrorBo
 `errorElement`. A non-member visiting `/w/<id>` gets `WorkspaceRoute`'s not-found page (RLS
 returns nothing for that id either way, so existence is not revealed); a module id from another
 workspace under a workspace the user belongs to gets `ModuleNotFound` for the same reason. The
-Epic B proposal's `/modules/new` is a dialog on the list instead; `/records/new` and
-`/records/:recordId` are Part 12.
+Epic B proposal's `/modules/new` is a dialog on the list instead. A record id from another
+module or workspace (or a malformed id) gets `RecordNotFound` the same way.
 
 ## Still to come
 

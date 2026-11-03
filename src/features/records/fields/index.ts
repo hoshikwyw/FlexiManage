@@ -9,4 +9,4 @@ export {
   getFieldTypeDefinition,
 } from './registry'
 export { RecordFieldControl } from './RecordFieldControl'
-export type { FieldInputProps, FieldTypeDefinition } from './types'
+export type { FieldFilterKind, FieldInputProps, FieldTypeDefinition } from './types'

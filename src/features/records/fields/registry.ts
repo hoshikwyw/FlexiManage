@@ -94,6 +94,7 @@ function formatCurrency(value: unknown, field: FieldDefinition): string {
 
 const text: FieldTypeDefinition = {
   type: 'text',
+  filterKind: 'text',
   label: 'Text',
   description: 'A line of text, up to 2,000 characters.',
   icon: TypeIcon,
@@ -111,6 +112,7 @@ const text: FieldTypeDefinition = {
 
 const number: FieldTypeDefinition = {
   type: 'number',
+  filterKind: 'number-range',
   label: 'Number',
   description: 'A decimal or whole number.',
   icon: HashIcon,
@@ -123,6 +125,7 @@ const number: FieldTypeDefinition = {
 
 const currency: FieldTypeDefinition = {
   type: 'currency',
+  filterKind: 'number-range',
   label: 'Currency',
   description: 'An amount of money in one currency.',
   icon: BanknoteIcon,
@@ -135,6 +138,7 @@ const currency: FieldTypeDefinition = {
 
 const date: FieldTypeDefinition = {
   type: 'date',
+  filterKind: 'date-range',
   label: 'Date',
   description: 'A calendar date without a time.',
   icon: CalendarIcon,
@@ -155,6 +159,7 @@ const date: FieldTypeDefinition = {
 
 const select: FieldTypeDefinition = {
   type: 'select',
+  filterKind: 'options',
   label: 'Select',
   description: 'One option from a list you define.',
   icon: ListIcon,
@@ -181,6 +186,7 @@ const select: FieldTypeDefinition = {
 
 const checkbox: FieldTypeDefinition = {
   type: 'checkbox',
+  filterKind: 'boolean',
   label: 'Checkbox',
   description: 'Yes or no.',
   icon: SquareCheckIcon,

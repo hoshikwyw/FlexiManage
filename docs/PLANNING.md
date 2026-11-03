@@ -128,8 +128,8 @@ Agents: supabase-engineer, frontend-dev, test-engineer, code-reviewer.
 - [x] (done 2026-11-03) Full-text and trigram search on records scoped by workspace (supabase-engineer).
 - [x] (done 2026-11-04) Field-type registry: text, number, date, select, checkbox, currency (frontend-dev). `src/features/records/fields/` with `buildRecordSchema` for Part 12.
 - [x] (done 2026-11-04) Module settings page: define fields, order, required flag (frontend-dev). Modules list, create dialog, module page (Records placeholder + Fields tab), settings page with danger zone.
-- [ ] Records table with sorting, filters, pagination and search (frontend-dev).
-- [ ] Record create and edit form generated from field definitions (frontend-dev).
+- [x] (done 2026-11-04) Records table with sorting, filters, pagination and search (frontend-dev). Server-side via PostgREST, view state in the URL; limitations (select sorts by option value, not label; checkbox filters ignore records without a value) in `docs/architecture.md`, "Records feature".
+- [x] (done 2026-11-04) Record create and edit form generated from field definitions (frontend-dev). `/records/new` and `/records/:recordId` (`?edit=1`), server 23514 mapped onto the field, stale required fields prompted; attachment and export slots left for Parts 13-14.
 - [ ] Attachment upload and download on a record (frontend-dev).
 - [ ] CSV export via Edge Function `export-records` with audit event (supabase-engineer).
 - [x] (done 2026-11-04, frontend part) Module templates (added 2026-11-03, Epic B6): templates shipped as code under `src/features/modules/lib/templates.ts` ("Blank", "Housekeeping tasks" = D1 default, "Clients"); "start from a template" on an empty modules list and in "New module". Open for supabase-engineer: the create is sequential (module insert, then field inserts, best-effort delete on failure), not one transaction; a `create_module_with_fields` SQL function or Edge Function can replace `applyTemplate`'s writer without touching the UI.

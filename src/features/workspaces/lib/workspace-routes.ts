@@ -11,6 +11,12 @@ export const WORKSPACE_ROUTES = {
   module: (workspaceId: string, moduleId: string) => `/w/${workspaceId}/modules/${moduleId}`,
   moduleSettings: (workspaceId: string, moduleId: string) =>
     `/w/${workspaceId}/modules/${moduleId}/settings`,
+  newRecord: (workspaceId: string, moduleId: string) =>
+    `/w/${workspaceId}/modules/${moduleId}/records/new`,
+  record: (workspaceId: string, moduleId: string, recordId: string) =>
+    `/w/${workspaceId}/modules/${moduleId}/records/${recordId}`,
+  editRecord: (workspaceId: string, moduleId: string, recordId: string) =>
+    `/w/${workspaceId}/modules/${moduleId}/records/${recordId}?edit=1`,
   invite: (token: string) => `/invite/${token}`,
 } as const
 

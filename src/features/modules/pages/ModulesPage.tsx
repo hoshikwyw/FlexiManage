@@ -2,6 +2,7 @@ import { PlusIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { useRecordCounts } from '@/features/records/api/use-record-counts'
 import { useCurrentWorkspace } from '@/features/workspaces/context/workspace-context'
 
 import { useModules } from '../api/use-modules'
@@ -15,6 +16,7 @@ import { BLANK_TEMPLATE_ID, DEFAULT_TEMPLATE_ID } from '../lib/templates'
 export function ModulesPage() {
   const { workspace, role } = useCurrentWorkspace()
   const modules = useModules(workspace?.id)
+  const recordCounts = useRecordCounts(workspace?.id)
   const [dialog, setDialog] = useState<{ open: boolean; templateId: string }>({
     open: false,
     templateId: BLANK_TEMPLATE_ID,
@@ -60,6 +62,7 @@ export function ModulesPage() {
           workspaceId={workspace.id}
           modules={modules.data}
           canManage={canManage}
+          recordCounts={recordCounts.data}
           onStartFromTemplate={() => setDialog({ open: true, templateId: DEFAULT_TEMPLATE_ID })}
         />
       )}

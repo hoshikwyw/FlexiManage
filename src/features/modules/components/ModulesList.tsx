@@ -11,6 +11,8 @@ interface ModulesListProps {
   workspaceId: string
   modules: ModuleSummary[]
   canManage: boolean
+  /** Record count per module id (`useRecordCounts`); missing ids show a dash. */
+  recordCounts?: Record<string, number>
   /** Opens the create dialog with the template picker (empty state, owner/admin). */
   onStartFromTemplate?: () => void
 }
@@ -20,6 +22,7 @@ export function ModulesList({
   workspaceId,
   modules,
   canManage,
+  recordCounts,
   onStartFromTemplate,
 }: ModulesListProps) {
   if (modules.length === 0) {
@@ -30,7 +33,12 @@ export function ModulesList({
       {modules.map((module) => (
         <li key={module.id} className="flex">
           <div className="flex w-full">
-            <ModuleCard workspaceId={workspaceId} module={module} canManage={canManage} />
+            <ModuleCard
+              workspaceId={workspaceId}
+              module={module}
+              canManage={canManage}
+              recordCount={recordCounts?.[module.id]}
+            />
           </div>
         </li>
       ))}

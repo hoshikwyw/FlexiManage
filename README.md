@@ -62,7 +62,9 @@ Modules: `/w/<id>/modules` lists what the workspace tracks (Workspace A ships wi
 fields and three records; Workspace B with an empty "Projects"). Owners and admins create a module
 from a template ("Housekeeping tasks" or "Clients") or blank, then manage its fields on the module
 page's Fields tab (add, edit label and required flag, reorder, delete) and rename or delete the
-module under `/w/<id>/modules/<moduleId>/settings`. The Records tab is filled in the next part.
+module under `/w/<id>/modules/<moduleId>/settings`. Every member works with records on the
+Records tab (server-side search, per-field filters, sorting and pagination, all kept in the URL)
+and creates, opens, edits and deletes them under `/w/<id>/modules/<moduleId>/records/...`.
 
 Invite flow: on `/w/<id>/members` an owner or admin invites by email and role; the invitation
 appears under "Pending invitations" with a Revoke button. Email delivery is not wired up yet

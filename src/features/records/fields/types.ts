@@ -21,6 +21,12 @@ export interface FieldInputProps {
   'aria-describedby'?: string
 }
 
+/**
+ * How the records toolbar filters a field type (see `lib/records-query.ts`):
+ * text contains, numeric range, date range, one-or-more options, yes/no.
+ */
+export type FieldFilterKind = 'text' | 'number-range' | 'date-range' | 'options' | 'boolean'
+
 export interface FieldTypeDefinition {
   type: FieldType
   /** Human label ("Text", "Currency"). */
@@ -37,6 +43,8 @@ export interface FieldTypeDefinition {
   zodSchema: (field: FieldDefinition) => ZodType
   /** Table cell text; empty string for null/undefined. */
   formatValue: (value: unknown, field: FieldDefinition) => string
+  /** Filter offered for the type in the records toolbar and applied server-side. */
+  filterKind: FieldFilterKind
   /** Raw input string to stored value (where the two differ). */
   parseInput?: (raw: string, field: FieldDefinition) => unknown
   InputComponent: ComponentType<FieldInputProps>
