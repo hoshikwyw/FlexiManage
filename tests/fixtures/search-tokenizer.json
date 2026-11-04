@@ -1,0 +1,365 @@
+{
+  "description": "Contract C4 search tokenizer fixture (docs/architecture.md). Read by tests/unit/search-tokenizer-parity.test.ts (frontend tokenizeSearch and supabase/functions/_shared/search.ts under Vitest) and tests/parity/search-tokenizer.deno.ts (the Deno module under Deno). tokens is the expected output of both; tsQuery is tokens as tok:* joined with \" & \", or null.",
+  "cases": [
+    {
+      "name": "empty string",
+      "input": "",
+      "tokens": [],
+      "tsQuery": null
+    },
+    {
+      "name": "whitespace only",
+      "input": "   \t\n ",
+      "tokens": [],
+      "tsQuery": null
+    },
+    {
+      "name": "plain word",
+      "input": "acme",
+      "tokens": ["acme"],
+      "tsQuery": "acme:*"
+    },
+    {
+      "name": "upper case",
+      "input": "ACME",
+      "tokens": ["acme"],
+      "tsQuery": "acme:*"
+    },
+    {
+      "name": "mixed case duplicates",
+      "input": "Acme ACME acme",
+      "tokens": ["acme"],
+      "tsQuery": "acme:*"
+    },
+    {
+      "name": "two words with extra spaces",
+      "input": "  Acme   Ltd ",
+      "tokens": ["acme", "ltd"],
+      "tsQuery": "acme:* & ltd:*"
+    },
+    {
+      "name": "decimal",
+      "input": "12500.5",
+      "tokens": ["12500.5"],
+      "tsQuery": "12500.5:*"
+    },
+    {
+      "name": "integer",
+      "input": "12500",
+      "tokens": ["12500"],
+      "tsQuery": "12500:*"
+    },
+    {
+      "name": "negative number",
+      "input": "-5",
+      "tokens": ["5"],
+      "tsQuery": "5:*"
+    },
+    {
+      "name": "positive sign",
+      "input": "+42",
+      "tokens": ["42"],
+      "tsQuery": "42:*"
+    },
+    {
+      "name": "negative decimal",
+      "input": "-42.5",
+      "tokens": ["42.5"],
+      "tsQuery": "42.5:*"
+    },
+    {
+      "name": "decimal comma",
+      "input": "12,5",
+      "tokens": ["12", "5"],
+      "tsQuery": "12:* & 5:*"
+    },
+    {
+      "name": "thousands separators",
+      "input": "1,234,567.89",
+      "tokens": ["1", "234", "567.89"],
+      "tsQuery": "1:* & 234:* & 567.89:*"
+    },
+    {
+      "name": "email",
+      "input": "jane@acme.example",
+      "tokens": ["jane@acme.example"],
+      "tsQuery": "jane@acme.example:*"
+    },
+    {
+      "name": "email in upper case",
+      "input": "Jane@ACME.Example",
+      "tokens": ["jane@acme.example"],
+      "tsQuery": "jane@acme.example:*"
+    },
+    {
+      "name": "partial email",
+      "input": "jane@acme",
+      "tokens": ["jane@acme"],
+      "tsQuery": "jane@acme:*"
+    },
+    {
+      "name": "email with plus tag",
+      "input": "ops+billing@example.com",
+      "tokens": ["ops+billing@example.com"],
+      "tsQuery": "ops+billing@example.com:*"
+    },
+    {
+      "name": "host name",
+      "input": "example.com",
+      "tokens": ["example.com"],
+      "tsQuery": "example.com:*"
+    },
+    {
+      "name": "www host",
+      "input": "www.example.com",
+      "tokens": ["www.example.com"],
+      "tsQuery": "www.example.com:*"
+    },
+    {
+      "name": "url",
+      "input": "https://www.example.com/path?q=1",
+      "tokens": ["https", "www.example.com", "path", "q", "1"],
+      "tsQuery": "https:* & www.example.com:* & path:* & q:* & 1:*"
+    },
+    {
+      "name": "hyphenated word",
+      "input": "foo-bar",
+      "tokens": ["foo-bar"],
+      "tsQuery": "foo-bar:*"
+    },
+    {
+      "name": "underscore",
+      "input": "a_b",
+      "tokens": ["a_b"],
+      "tsQuery": "a_b:*"
+    },
+    {
+      "name": "trailing dot",
+      "input": "a.b.",
+      "tokens": ["a.b"],
+      "tsQuery": "a.b:*"
+    },
+    {
+      "name": "only kept punctuation",
+      "input": "...",
+      "tokens": [],
+      "tsQuery": null
+    },
+    {
+      "name": "punctuation mix",
+      "input": ".-_+@",
+      "tokens": [],
+      "tsQuery": null
+    },
+    {
+      "name": "double quoted",
+      "input": "\"quoted\"",
+      "tokens": ["quoted"],
+      "tsQuery": "quoted:*"
+    },
+    {
+      "name": "single quoted apostrophe",
+      "input": "o'brien",
+      "tokens": ["o", "brien"],
+      "tsQuery": "o:* & brien:*"
+    },
+    {
+      "name": "typographic quotes",
+      "input": "\u201cAcme\u201d \u2018Ltd\u2019",
+      "tokens": ["acme", "ltd"],
+      "tsQuery": "acme:* & ltd:*"
+    },
+    {
+      "name": "tsquery operators",
+      "input": "a & b | !c",
+      "tokens": ["a", "b", "c"],
+      "tsQuery": "a:* & b:* & c:*"
+    },
+    {
+      "name": "tsquery syntax",
+      "input": "foo:* & (bar | 'baz')",
+      "tokens": ["foo", "bar", "baz"],
+      "tsQuery": "foo:* & bar:* & baz:*"
+    },
+    {
+      "name": "colon prefix syntax",
+      "input": "acme:*",
+      "tokens": ["acme"],
+      "tsQuery": "acme:*"
+    },
+    {
+      "name": "parentheses and brackets",
+      "input": "(draft) [v2] {x}",
+      "tokens": ["draft", "v2", "x"],
+      "tsQuery": "draft:* & v2:* & x:*"
+    },
+    {
+      "name": "backslash and slash",
+      "input": "a\b/c",
+      "tokens": ["a", "c"],
+      "tsQuery": "a:* & c:*"
+    },
+    {
+      "name": "like wildcards",
+      "input": "100% a_b",
+      "tokens": ["100", "a_b"],
+      "tsQuery": "100:* & a_b:*"
+    },
+    {
+      "name": "semicolon and comma",
+      "input": "a;b,c",
+      "tokens": ["a", "b", "c"],
+      "tsQuery": "a:* & b:* & c:*"
+    },
+    {
+      "name": "composed accent",
+      "input": "caf\u00e9",
+      "tokens": ["caf\u00e9"],
+      "tsQuery": "caf\u00e9:*"
+    },
+    {
+      "name": "decomposed accent",
+      "input": "cafe\u0301",
+      "tokens": ["caf\u00e9"],
+      "tsQuery": "caf\u00e9:*"
+    },
+    {
+      "name": "accent upper case",
+      "input": "CAF\u00c9",
+      "tokens": ["caf\u00e9"],
+      "tsQuery": "caf\u00e9:*"
+    },
+    {
+      "name": "german sharp s",
+      "input": "Stra\u00dfe",
+      "tokens": ["stra\u00dfe"],
+      "tsQuery": "stra\u00dfe:*"
+    },
+    {
+      "name": "cyrillic",
+      "input": "\u041c\u043e\u0441\u043a\u0432\u0430",
+      "tokens": ["\u043c\u043e\u0441\u043a\u0432\u0430"],
+      "tsQuery": "\u043c\u043e\u0441\u043a\u0432\u0430:*"
+    },
+    {
+      "name": "greek final sigma",
+      "input": "\u039f\u0394\u039f\u03a3",
+      "tokens": ["\u03bf\u03b4\u03bf\u03c2"],
+      "tsQuery": "\u03bf\u03b4\u03bf\u03c2:*"
+    },
+    {
+      "name": "japanese",
+      "input": "\u5831\u544a\u66f8",
+      "tokens": ["\u5831\u544a\u66f8"],
+      "tsQuery": "\u5831\u544a\u66f8:*"
+    },
+    {
+      "name": "arabic digits",
+      "input": "\u0661\u0662\u0663",
+      "tokens": ["\u0661\u0662\u0663"],
+      "tsQuery": "\u0661\u0662\u0663:*"
+    },
+    {
+      "name": "emoji between words",
+      "input": "acme\ud83d\ude00ltd",
+      "tokens": ["acme", "ltd"],
+      "tsQuery": "acme:* & ltd:*"
+    },
+    {
+      "name": "non-breaking space",
+      "input": "acme\u00a0ltd",
+      "tokens": ["acme", "ltd"],
+      "tsQuery": "acme:* & ltd:*"
+    },
+    {
+      "name": "ideographic space",
+      "input": "acme\u3000ltd",
+      "tokens": ["acme", "ltd"],
+      "tsQuery": "acme:* & ltd:*"
+    },
+    {
+      "name": "zero-width space",
+      "input": "acme\u200bltd",
+      "tokens": ["acme", "ltd"],
+      "tsQuery": "acme:* & ltd:*"
+    },
+    {
+      "name": "tab and newline",
+      "input": "acme\tltd\nco",
+      "tokens": ["acme", "ltd", "co"],
+      "tsQuery": "acme:* & ltd:* & co:*"
+    },
+    {
+      "name": "more than eight tokens",
+      "input": "a b c d e f g h i j",
+      "tokens": ["a", "b", "c", "d", "e", "f", "g", "h"],
+      "tsQuery": "a:* & b:* & c:* & d:* & e:* & f:* & g:* & h:*"
+    },
+    {
+      "name": "duplicates before the cap",
+      "input": "a a b b c c d d e e f f g g h h i",
+      "tokens": ["a", "b", "c", "d", "e", "f", "g", "h"],
+      "tsQuery": "a:* & b:* & c:* & d:* & e:* & f:* & g:* & h:*"
+    },
+    {
+      "name": "fullwidth letters",
+      "input": "\uff21\uff23\uff2d\uff25",
+      "tokens": ["\uff41\uff43\uff4d\uff45"],
+      "tsQuery": "\uff41\uff43\uff4d\uff45:*"
+    },
+    {
+      "name": "fullwidth digits",
+      "input": "\uff11\uff12\uff13",
+      "tokens": ["\uff11\uff12\uff13"],
+      "tsQuery": "\uff11\uff12\uff13:*"
+    },
+    {
+      "name": "leading and trailing punctuation around an email",
+      "input": "<jane@acme.example>",
+      "tokens": ["jane@acme.example"],
+      "tsQuery": "jane@acme.example:*"
+    },
+    {
+      "name": "date",
+      "input": "2026-11-05",
+      "tokens": ["2026-11-05"],
+      "tsQuery": "2026-11-05:*"
+    },
+    {
+      "name": "time",
+      "input": "09:30",
+      "tokens": ["09", "30"],
+      "tsQuery": "09:* & 30:*"
+    },
+    {
+      "name": "currency symbol",
+      "input": "\u20ac12500.50",
+      "tokens": ["12500.50"],
+      "tsQuery": "12500.50:*"
+    },
+    {
+      "name": "hash tag",
+      "input": "#urgent",
+      "tokens": ["urgent"],
+      "tsQuery": "urgent:*"
+    },
+    {
+      "name": "at only edges",
+      "input": "@acme@",
+      "tokens": ["acme"],
+      "tsQuery": "acme:*"
+    },
+    {
+      "name": "dotted initials",
+      "input": "J.R.R.",
+      "tokens": ["j.r.r"],
+      "tsQuery": "j.r.r:*"
+    },
+    {
+      "name": "turkish dotted capital I",
+      "input": "\u0130stanbul",
+      "tokens": ["i\u0307stanbul"],
+      "tsQuery": "i\u0307stanbul:*"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test'
+import { expect, test, type BrowserContext, type Page, type Request } from '@playwright/test'
 
 import { PIXEL_PNG, specData } from './support/data'
 import { count, invitationToken, lit } from './support/db'
@@ -194,7 +194,26 @@ test('a PNG uploaded to the record downloads with identical bytes', async () => 
   await expect(files).toContainText(fileName)
   await expect(files).toContainText(`${PIXEL_PNG.length} B`)
 
+  // Contract C1: the browser asks attachment-url for a short-lived signed URL; it never signs
+  // or downloads through Storage itself.
+  const storageReads: string[] = []
+  const onRequest = (request: Request) => {
+    if (/\/storage\/v1\/object\/(sign|authenticated)\//.test(new URL(request.url()).pathname)) {
+      if (request.method() === 'POST' || !request.url().includes('token=')) {
+        storageReads.push(`${request.method()} ${new URL(request.url()).pathname}`)
+      }
+    }
+  }
+  ownerPage.on('request', onRequest)
+  const urlRequest = ownerPage.waitForResponse(
+    (response) =>
+      response.url().endsWith('/functions/v1/attachment-url') &&
+      response.request().method() === 'POST',
+  )
   const download = await downloadAttachment(ownerPage, fileName)
+  ownerPage.off('request', onRequest)
+  expect((await urlRequest).status()).toBe(200)
+  expect(storageReads).toEqual([])
   expect(download.name).toBe(fileName)
   expect(download.bytes.equals(PIXEL_PNG)).toBe(true)
   expect(await count('public.attachments', `record_id = ${lit(bravoId)}`)).toBe(1)
@@ -283,4 +302,35 @@ test('after the owner removes the member, the workspace is gone for them', async
   await expect(
     memberPage.getByRole('heading', { name: 'Create your first workspace' }),
   ).toBeVisible()
+})
+
+test('deleting a record with an attachment shows in Recent activity with the file count', async () => {
+  await ownerPage.goto(moduleUrl(workspaceId, moduleId, `/records/${bravoId}`))
+  await expect(ownerPage.getByRole('heading', { name: bravo, level: 1 })).toBeVisible()
+  await expect(ownerPage.getByRole('list', { name: 'Attached files' })).toContainText(fileName)
+  await ownerPage.getByRole('button', { name: 'Delete', exact: true }).click()
+  await ownerPage.getByRole('alertdialog').getByRole('button', { name: 'Delete record' }).click()
+  await expect(toast(ownerPage, `Record "${bravo}" deleted`)).toBeVisible()
+  await expect(ownerPage).toHaveURL(new RegExp(`/modules/${moduleId}$`))
+
+  expect(await count('public.records', `id = ${lit(bravoId)}`)).toBe(0)
+  // Contract C2/C5: the cascade removed the attachment row and queued its object.
+  expect(
+    await count(
+      'public.storage_deletion_queue',
+      `object_name like ${lit(`${workspaceId}/${bravoId}/%`)}`,
+    ),
+  ).toBe(1)
+  expect(
+    await count(
+      'public.audit_events',
+      `workspace_id = ${lit(workspaceId)} and action = 'record.deleted' and entity_id = ${lit(bravoId)} ` +
+        `and metadata = jsonb_build_object('module_id', ${lit(moduleId)}::uuid, 'title', ${lit(bravo)}, 'attachment_count', 1)`,
+    ),
+  ).toBe(1)
+
+  await ownerPage.goto(`/w/${workspaceId}`)
+  await expect(ownerPage.getByRole('list', { name: 'Recent activity' })).toContainText(
+    `${owner.fullName} deleted the record "${bravo}" (1 attachment)`,
+  )
 })

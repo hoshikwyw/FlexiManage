@@ -127,6 +127,8 @@ export interface RecordInput {
   selects?: Record<string, string>
   /** Accessible name of a text-like input (text, date) -> value. */
   texts?: Record<string, string>
+  /** Accessible name of a number or currency input (role spinbutton) -> value as typed. */
+  numbers?: Record<string, string>
 }
 
 /** Fill the record form on the current page; option values are given by their visible label. */
@@ -137,6 +139,9 @@ export async function fillRecordForm(page: Page, input: RecordInput): Promise<vo
   }
   for (const [label, value] of Object.entries(input.texts ?? {})) {
     await page.getByRole('textbox', { name: label, exact: true }).fill(value)
+  }
+  for (const [label, value] of Object.entries(input.numbers ?? {})) {
+    await page.getByRole('spinbutton', { name: label, exact: true }).fill(value)
   }
 }
 

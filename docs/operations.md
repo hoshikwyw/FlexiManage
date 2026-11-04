@@ -172,6 +172,38 @@ Conventions (2026-11-03, Part 8b):
 - A failing test that exposes a schema bug is fixed with a new migration, never by editing an
   applied one or by weakening the assertion.
 
+### Concurrency tests
+
+Added 2026-11-05 (Part 17b). pgTAP runs each file in one transaction, so it cannot show what two
+sessions do to each other. `npm run test:concurrency` (`node --test
+tests/concurrency/concurrency.test.ts`; Node 24 runs the TypeScript directly, no npm dependency)
+drives two real sessions plus an observer through `psql` processes: the host `psql` with
+`postgresql://postgres:postgres@127.0.0.1:54322/postgres` when one is on PATH (CI), otherwise
+`docker exec -i supabase_db_fleximanage psql` (`CONCURRENCY_DB_MODE=psql|docker` and
+`CONCURRENCY_DB_URL` override; `CONCURRENCY_DEBUG=1` echoes every step). Writers impersonate the
+fixture user like PostgREST (`set role authenticated` + `request.jwt.claims`), so RLS and the
+column grants apply.
+
+Interleavings are forced: in the ordered cases session 1 does its write in an open transaction,
+session 2 starts the conflicting statement and the observer waits until `pg_stat_activity` shows
+session 2 waiting on a lock before session 1 commits; in the simultaneous cases both sessions
+queue behind an advisory "gate" lock held by the observer and race when it opens. Cases (all
+pass on 2026-11-05, migration 006, about 6 s):
+
+| Case | Expectation |
+| ---- | ----------- |
+| (a) two simultaneous attachment inserts on a record with 9 uploaded files | exactly one succeeds; the other waited on the per-record advisory lock and gets `23514 attachments: at most 10 files per record`; 10 rows |
+| (b) delete field `x` / insert a record with `x`, both orders and simultaneous | insert first: the delete waits on the module row lock and its strip removes `x` from the new record; delete first: the insert waits and fails `23514 custom_values.x: ...`; never a record with `x` |
+| (c) remove select option `c` / write `c`, both orders and simultaneous | write first: the option update waits and fails `option "c" is still used by records`; removal first: the write waits and fails on `custom_values.stage`; never a stored value outside the options |
+| (d) two simultaneous `update_record` calls with the same expected `updated_at` | exactly one succeeds; the other waited on the row lock and gets `PT409 record_changed`; the winner's value is stored |
+
+Fixtures (fixed ids `...0cc...` in `tests/fixtures/concurrency.ts`: one user
+`concurrency-owner@example.com`, workspace `concurrency-tests`, one module with fields `company`,
+`x`, `stage`, two records, nine uploaded attachment rows without objects) are committed at the
+start and removed at the end by deleting the user (the workspace cascades; the deletion queue
+rows of its attachments are deleted as well). A run left half-way is cleaned up by the next
+run's setup. Do not use these ids or that email for manual testing.
+
 ### Edge Functions
 
 `npm run functions:serve` needs the stack running. It starts the Docker edge runtime (Deno 2; no
@@ -204,7 +236,15 @@ container behind when it is killed; `docker stop supabase_edge_runtime_fleximana
   search helpers: `deno test supabase/functions/_shared/csv.test.ts supabase/functions/_shared/search.test.ts`;
   without a local Deno, through Docker:
   `docker run --rm -v "$PWD/supabase/functions:/fns:ro" -w /fns denoland/deno:2.1.4 test --no-lock _shared/csv.test.ts _shared/search.test.ts`
-  (on Git Bash prefix `MSYS_NO_PATHCONV=1`; 16 tests on 2026-11-04). Type-check like CI:
+  (on Git Bash prefix `MSYS_NO_PATHCONV=1`; 16 tests on 2026-11-04). Tokenizer parity between
+  the records list and `export-records` (contract C4): one fixture,
+  `tests/fixtures/search-tokenizer.json` (60 inputs: unicode, punctuation, emails, decimals,
+  signs, quotes, empty), is checked for the frontend `tokenizeSearch` and for `_shared/search.ts`
+  under Vitest (`tests/unit/search-tokenizer-parity.test.ts`, part of `npm run test`) and for
+  `_shared/search.ts` under Deno (`tests/parity/search-tokenizer.deno.ts`):
+  `docker run --rm -v "$PWD/tests:/repo/tests:ro" -v "$PWD/supabase/functions:/repo/supabase/functions:ro" -w /repo denoland/deno:2.1.4 test --no-lock --allow-read tests/parity/search-tokenizer.deno.ts`
+  (61 tests on 2026-11-05; with a local Deno in the repo root set `DENO_NO_PACKAGE_JSON=1`).
+  Type-check like CI:
   `deno check --config supabase/functions/deno.json supabase/functions/*/index.ts`. Deploy with
   `supabase functions deploy <name>` once a hosted project exists (Phase 5).
 
@@ -255,7 +295,7 @@ Added 2026-11-04 (Part 15). Playwright 1.64, Chromium only, specs in `tests/e2e`
 
 | Command                        | What it does                                                         |
 | ------------------------------ | -------------------------------------------------------------------- |
-| `npm run test:e2e`             | All specs (smoke, journey, isolation, auth, validation; 33 tests).   |
+| `npm run test:e2e`             | All specs (smoke, journey, isolation, auth, validation, records; 45 tests). |
 | `npm run test:e2e:smoke`       | The unauthenticated smoke spec only; needs no stack.                 |
 | `npm run test:e2e:ui`          | Playwright UI mode.                                                  |
 | `npx playwright show-report`   | Open the last HTML report (`playwright-report/`, git-ignored).       |
@@ -271,7 +311,8 @@ Runtime requirements:
   It must be `localhost`, not `127.0.0.1`: the Edge Functions answer CORS for
   `ALLOWED_ORIGIN=http://localhost:5173` only, and GoTrue's `site_url` is the same origin. The dev
   server (not `vite preview`) is needed because `isolation.spec.ts` imports
-  `/src/lib/supabase.ts` in the page to call Storage with the signed-in user's own client.
+  `/src/lib/supabase.ts` in the page to call Storage and `attachment-url` with the signed-in
+  user's own client and session.
 - Edge Functions: the global setup posts to `/functions/v1/invite-member` without credentials and
   expects 401. Anything else (500 when the edge runtime container is stopped) makes it start
   `supabase functions serve` in the background (log in `test-results/functions-serve.log`), wait up
@@ -299,14 +340,30 @@ Conventions:
 - Seed users are used read-only, and only by `isolation.spec.ts` (alice and bob) and the
   teardown assertion. Every other spec signs up its own owner (through the UI in the journey,
   through `/auth/v1/signup` elsewhere) and works in its own workspace, so specs can run in
-  parallel. The isolation spec adds one attachment to the seed record Acme Ltd in setup and
-  removes it (object, then row) in teardown.
+  parallel. The isolation spec adds one attachment to the seed record Acme Ltd in setup (and
+  checks that `attachment-url` answers alice 200 with a URL that downloads the same bytes while
+  her direct `createSignedUrl` fails) and removes it in teardown the way the app does (contract
+  C2): it deletes the row only, asserts a `storage_deletion_queue` entry for the path, calls
+  `purge-attachments` once and asserts that no `storage.objects` row is left for the path.
+- `records.spec.ts` (2026-11-05) covers the Phase 3 review fixes in its own workspace with two
+  modules from the Clients template: search for `12500.5` and for `acme` (a record whose only
+  match is the contact email `jane@acme.example`), the edit conflict of `update_record` (two
+  pages of the same user; page 2's stale save shows the banner, Reload keeps its edit and loads
+  page 1's, the next save succeeds; final values checked in the database), and table/export
+  parity: 30 records inserted as `postgres`, then for six URL criteria (none, one option, two
+  options, number range with a text filter, a host search with an option, a domain-part search
+  with a max-only range) the table's total ("1–25 of N") must equal the CSV's row count.
 - Cleanup: each spec deletes its users with `delete from auth.users where email like
   '<prefix>%'` as `postgres` in `afterAll`. That is an account deletion: `on_auth_user_deleted`
   deletes the workspaces they owned alone, and modules, records, invitations and attachment rows
   cascade (objects are queued in `storage_deletion_queue`). The global teardown deletes any
   leftover `e2e-<run id>-%` user, calls `purge-attachments` with the local service-role key read
-  from `supabase status -o env` in memory (never printed or written), and fails the run unless
+  from `supabase status -o env` in memory (never printed or written) and again while it
+  reports `retryable > 0` (at most 10 calls; `tests/e2e/support/admin.ts`), prints
+  `Storage purge: <purged> object(s) purged, <alreadyGone> already gone, <retryable> retryable,
+  <dead> dead (<n> call(s))`, warns when entries are still retryable or `dead > 0` (attempts >= 10,
+  see "Scheduled maintenance"; a warning, not a failure, because the queue is shared with manual
+  sessions), and fails the run unless
   alice's only membership is owner of `workspace-a`, bob's only membership is owner of
   `workspace-b`, and Clients has exactly 3 records. The global setup removes `e2e-%@example.com`
   users older than three hours (aborted runs).
@@ -325,7 +382,13 @@ Conventions:
   timezone UTC.
 
 Local timing on 2026-11-04 (Windows 11, Docker Desktop, default worker count): 96 to 106 s per run of
-the 33 tests, including starting the dev server and `supabase functions serve`.
+the 33 tests, including starting the dev server and `supabase functions serve`. On 2026-11-05
+(45 tests, reusing the running dev server): 84 to 120 s per run (Playwright's own time), three runs
+in a row without `db:reset` and one after it all passed.
+
+The service-role key is read (in memory, from `supabase status -o env`) by the global teardown
+and by the isolation spec's teardown for `purge-attachments` only; no spec uses it for anything
+else and it is never printed.
 
 ## Attachments bucket
 
@@ -463,11 +526,17 @@ is enabled and concurrency cancels superseded runs on the same ref.
   unknown invitation token 404, `export-records` into a foreign workspace 403,
   `export-records` of the seed module Clients 200 with `text/csv` (each run writes one
   `records.exported` audit row in Workspace A), and `attachment-url` for a random id 404 (added
-  2026-11-04). `scripts/ci/purge-drain-check.sh` (purge regression, needs the service-role key
-  from `supabase status` and `docker exec` into the database container) exists but is not yet
-  wired into the workflow (devops-engineer). If the edge runtime is not answering it starts
-  `supabase functions serve` itself and stops it afterwards. Run it locally with
-  `bash scripts/ci/functions-smoke.sh` (needs curl, and jq or node).
+  2026-11-04). If the edge runtime is not answering it starts `supabase functions serve` itself
+  and stops it afterwards. Run it locally with `bash scripts/ci/functions-smoke.sh` (needs curl,
+  and jq or node). Since 2026-11-05 (Part 17b) the job also runs, in this order: the tokenizer
+  fixture under Deno (`deno test --no-lock --allow-read tests/parity/search-tokenizer.deno.ts`
+  with `DENO_NO_PACKAGE_JSON=1`, because the job has no `node_modules`) after the Edge Function
+  type check; `scripts/ci/purge-drain-check.sh` right after the smoke test (300 long-named queue
+  entries drained by one `purge-attachments` call, response shape `{ purged, alreadyGone,
+  retryable, dead }`; reads the service-role key from `supabase status -o env` without printing
+  it and inserts the entries through `docker exec` into the database container; it relies on the
+  edge runtime started by `supabase start`); and, after the pgTAP tests, `actions/setup-node@v4`
+  (Node 24, no `npm ci`) plus `npm run test:concurrency` through the runner's host `psql`.
 
 - `e2e` (added 2026-11-04): only on pull requests into `main` and pushes to `main` (job-level
   `if`), 30-minute timeout. `npm ci`, Supabase CLI `2.122.0`, `supabase start`, then `.env.local`

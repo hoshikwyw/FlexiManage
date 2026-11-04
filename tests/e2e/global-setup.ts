@@ -1,10 +1,16 @@
-import { execSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { FullConfig } from '@playwright/test'
 
+import {
+  drainPurgeQueue,
+  localServiceRoleKey,
+  supabaseCli,
+  type PurgeSummary,
+} from './support/admin'
 import {
   EXPECTED_SEED_STATE,
   deleteStaleE2eUsers,
@@ -26,10 +32,11 @@ import { EDGE_CONTAINER, hasLocalBackend, runId, supabaseAnonKey, supabaseUrl } 
  *    is stopped that setup did not start.
  * 3. Users of aborted runs older than three hours are removed (`e2e-%@example.com`).
  *
- * Teardown deletes whatever the current run left behind (`e2e-<run id>-%`), purges the storage
- * deletion queue through `purge-attachments` (best effort, needs `supabase status`), and fails
- * the run if the seed facts changed: alice owns Workspace A only, bob owns Workspace B only, and
- * Clients still has 3 records.
+ * Teardown deletes whatever the current run left behind (`e2e-<run id>-%`), drains the storage
+ * deletion queue through `purge-attachments` (best effort, needs `supabase status`; repeated
+ * while it reports `retryable > 0`, at most MAX_PURGE_CALLS times; `dead > 0` is a warning), and
+ * fails the run if the seed facts changed: alice owns Workspace A only, bob owns Workspace B
+ * only, and Clients still has 3 records.
  */
 
 const FUNCTIONS_PROBE = `${supabaseUrl}/functions/v1/invite-member`
@@ -59,16 +66,6 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs: number): Promis
 }
 
 const isWindows = process.platform === 'win32'
-
-/**
- * The Supabase CLI as one shell command line: `supabase` when it is on PATH (CI installs it
- * with supabase/setup-cli), else the devDependency through npx. Both may be .cmd shims on
- * Windows, which need a shell; the line is built from constants only.
- */
-function supabaseCli(subcommand: string): string {
-  const probe = spawnSync('supabase --version', { stdio: 'ignore', shell: true })
-  return probe.status === 0 ? `supabase ${subcommand}` : `npx --no-install supabase ${subcommand}`
-}
 
 interface FunctionsServe {
   child: ChildProcess
@@ -120,40 +117,38 @@ function stopFunctionsServe({ child, workdir, logFile }: FunctionsServe): void {
   rmSync(workdir, { recursive: true, force: true })
 }
 
-/** The service-role key of the local stack, read in memory only; never printed or stored. */
-function localServiceRoleKey(): string | null {
-  try {
-    const out = execSync(supabaseCli('status -o env'), {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    return /^SERVICE_ROLE_KEY="?([^"\r\n]+)"?$/m.exec(out)?.[1] ?? null
-  } catch {
-    return null
-  }
-}
-
-/** Remove storage objects of attachment rows deleted by the cleanup (operator procedure). */
+/**
+ * Remove storage objects of attachment rows deleted by the cleanup (operator procedure): call
+ * `purge-attachments` while it reports `retryable > 0`, at most MAX_PURGE_CALLS times. Entries
+ * that are still retryable after that, and `dead` entries (attempts >= 10, no longer retried),
+ * are reported as teardown warnings; they do not fail the run (the queue is shared with manual
+ * sessions, see docs/operations.md, "Scheduled maintenance").
+ */
 async function purgeDeletedAttachments(): Promise<string> {
   const key = localServiceRoleKey()
   if (!key) return 'skipped (supabase status unavailable)'
-  let purged = 0
-  for (let round = 0; round < 10; round += 1) {
-    const response = await fetch(`${supabaseUrl}/functions/v1/purge-attachments`, {
-      method: 'POST',
-      headers: {
-        apikey: supabaseAnonKey,
-        authorization: `Bearer ${key}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ limit: 500 }),
-    })
-    if (!response.ok) return `failed with HTTP ${response.status}`
-    const body = (await response.json()) as { data: { purged: number; remaining: number } }
-    purged += body.data.purged
-    if (body.data.remaining === 0) break
+  let summary: PurgeSummary
+  try {
+    summary = await drainPurgeQueue(key)
+  } catch (error) {
+    return `failed: ${error instanceof Error ? error.message : String(error)}`
   }
-  return `${purged} object(s) purged`
+  if (summary.retryable > 0) {
+    console.warn(
+      `[e2e] Warning: ${summary.retryable} deletion queue entr${summary.retryable === 1 ? 'y is' : 'ies are'} ` +
+        `still retryable after ${summary.calls} purge call(s).`,
+    )
+  }
+  if (summary.dead > 0) {
+    console.warn(
+      `[e2e] Warning: ${summary.dead} dead deletion queue entr${summary.dead === 1 ? 'y' : 'ies'} ` +
+        '(attempts >= 10, no longer retried); see docs/operations.md, "Scheduled maintenance".',
+    )
+  }
+  return (
+    `${summary.purged} object(s) purged, ${summary.alreadyGone} already gone, ` +
+    `${summary.retryable} retryable, ${summary.dead} dead (${summary.calls} call(s))`
+  )
 }
 
 export default async function globalSetup(_config: FullConfig): Promise<() => Promise<void>> {

@@ -106,7 +106,8 @@ test('a required field added in another tab is reported on that field by the ser
   // The first tab still has the old definitions, so only the server knows Region is required.
   await expect(page.getByLabel(/^Region/)).toHaveCount(0)
   await page.getByLabel('Contract value').fill('2000')
-  const writes = writeCounter(page, /\/rest\/v1\/records/)
+  // Since migration 006 an edit is one `update_record` call (contract C3), not a PATCH.
+  const writes = writeCounter(page, /\/rest\/v1\/(records|rpc\/update_record)\b/)
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(
     page.getByRole('alert').filter({ hasText: 'The fields of this module changed' }),

@@ -98,28 +98,29 @@ Add shadcn/ui components with `npx shadcn@latest add <component>`; they land in 
 
 ## Scripts
 
-| Script                    | Description                                                                                                                                        |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run dev`             | Start the Vite dev server with hot module reload.                                                                                                  |
-| `npm run build`           | Typecheck the app, then build the production bundle into `dist/`.                                                                                  |
-| `npm run preview`         | Serve the production build locally.                                                                                                                |
-| `npm run typecheck`       | Run `tsc -b` over every project in `tsconfig.json`: app (`src`, incl. co-located tests), node configs, `tests/`.                                   |
-| `npm run lint`            | Run ESLint (flat config) over the whole repository.                                                                                                |
-| `npm run format`          | Format all files with Prettier.                                                                                                                    |
-| `npm run format:check`    | Verify formatting without writing (used in CI).                                                                                                    |
-| `npm run test`            | Run unit and component tests once with Vitest (jsdom).                                                                                             |
-| `npm run test:watch`      | Run Vitest in watch mode.                                                                                                                          |
-| `npm run test:e2e`        | Run every Playwright spec in `tests/e2e` against the Vite dev server on `localhost:5173` (see End-to-end tests).                                   |
-| `npm run test:e2e:smoke`  | Run only the unauthenticated smoke spec (works on a clean clone without a Supabase stack).                                                         |
-| `npm run test:e2e:ui`     | Open Playwright UI mode for running and debugging specs interactively.                                                                             |
-| `npm run test:db`         | Run the pgTAP database tests in `supabase/tests` against the local stack (passes on a fresh or a used database).                                   |
-| `npm run test:db:fresh`   | `db:reset` then `test:db`: the CI-equivalent run against a freshly seeded database.                                                                |
-| `npm run db:start`        | Start the local Supabase stack in Docker (`supabase start`).                                                                                       |
-| `npm run db:dirty`        | Apply `scripts/db/dirty-state.sql` to the local database (extra users, workspaces, invitations, audit rows) to check `test:db` on a used database. |
-| `npm run db:stop`         | Stop the local Supabase stack (`supabase stop`).                                                                                                   |
-| `npm run db:reset`        | Reset the local Supabase database and re-apply migrations and seed.                                                                                |
-| `npm run db:types`        | Generate TypeScript types from the local database into `src/types/supabase.ts`.                                                                    |
-| `npm run functions:serve` | Serve the Edge Functions in `supabase/functions` locally with hot reload (needs the stack running).                                                |
+| Script                     | Description                                                                                                                                        |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`              | Start the Vite dev server with hot module reload.                                                                                                  |
+| `npm run build`            | Typecheck the app, then build the production bundle into `dist/`.                                                                                  |
+| `npm run preview`          | Serve the production build locally.                                                                                                                |
+| `npm run typecheck`        | Run `tsc -b` over every project in `tsconfig.json`: app (`src`, incl. co-located tests), node configs, `tests/`.                                   |
+| `npm run lint`             | Run ESLint (flat config) over the whole repository.                                                                                                |
+| `npm run format`           | Format all files with Prettier.                                                                                                                    |
+| `npm run format:check`     | Verify formatting without writing (used in CI).                                                                                                    |
+| `npm run test`             | Run unit and component tests once with Vitest (jsdom).                                                                                             |
+| `npm run test:watch`       | Run Vitest in watch mode.                                                                                                                          |
+| `npm run test:e2e`         | Run every Playwright spec in `tests/e2e` against the Vite dev server on `localhost:5173` (see End-to-end tests).                                   |
+| `npm run test:e2e:smoke`   | Run only the unauthenticated smoke spec (works on a clean clone without a Supabase stack).                                                         |
+| `npm run test:e2e:ui`      | Open Playwright UI mode for running and debugging specs interactively.                                                                             |
+| `npm run test:db`          | Run the pgTAP database tests in `supabase/tests` against the local stack (passes on a fresh or a used database).                                   |
+| `npm run test:db:fresh`    | `db:reset` then `test:db`: the CI-equivalent run against a freshly seeded database.                                                                |
+| `npm run test:concurrency` | Race tests with two real database sessions (attachment cap, field delete, option removal, `update_record`) against the local stack.                |
+| `npm run db:start`         | Start the local Supabase stack in Docker (`supabase start`).                                                                                       |
+| `npm run db:dirty`         | Apply `scripts/db/dirty-state.sql` to the local database (extra users, workspaces, invitations, audit rows) to check `test:db` on a used database. |
+| `npm run db:stop`          | Stop the local Supabase stack (`supabase stop`).                                                                                                   |
+| `npm run db:reset`         | Reset the local Supabase database and re-apply migrations and seed.                                                                                |
+| `npm run db:types`         | Generate TypeScript types from the local database into `src/types/supabase.ts`.                                                                    |
+| `npm run functions:serve`  | Serve the Edge Functions in `supabase/functions` locally with hot reload (needs the stack running).                                                |
 
 CI helper scripts live in `scripts/ci` and are plain bash (LF):
 
@@ -176,6 +177,7 @@ npm run db:reset        # apply supabase/migrations and supabase/seed.sql from s
 npm run db:types        # regenerate src/types/supabase.ts from the local schema
 npm run test:db         # run the RLS / role / trigger tests in supabase/tests (pgTAP)
 npm run test:db:fresh   # db:reset + test:db, what CI runs
+npm run test:concurrency # two-session race tests (docs/operations.md, "Concurrency tests")
 npm run db:stop         # stop the containers
 ```
 
@@ -202,7 +204,8 @@ and `bob@example.com` (owns `workspace-b`), password `password123`; fixed ids li
 `tsconfig` projects), lint, format check, unit tests and build on Node 24 with the npm cache
 enabled (`verify`), and in parallel starts the local Supabase stack, type-checks the Edge
 Functions with Deno (`deno check`), runs `scripts/ci/functions-smoke.sh` against the served
-functions, runs the pgTAP tests and fails if `src/types/supabase.ts` is out of date with the
+functions and `scripts/ci/purge-drain-check.sh`, checks the search tokenizer fixture under Deno,
+runs the pgTAP tests and `npm run test:concurrency`, and fails if `src/types/supabase.ts` is out of date with the
 migrations (`db-tests`). On pull requests into `main` and pushes to `main` the `e2e` job starts
 the stack and runs `npm run test:e2e` with Chromium; on failure the HTML report and traces are
 uploaded as the `playwright-report` artifact.

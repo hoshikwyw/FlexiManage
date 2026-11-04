@@ -19,14 +19,31 @@ vi.mock('@/lib/supabase', async () => {
 
 const signUp = vi.mocked(supabase.auth.signUp)
 
+/**
+ * Fill the four fields the way a password manager or a paste does: focus the field, then one
+ * input event per field. `user.type` would dispatch the full key sequence (and re-render the
+ * whole form) for each of the ~50 characters; under a loaded full run that alone took 7 to 11 s
+ * of the 15 s test timeout and made the first test of this file flaky. None of these tests is
+ * about per-keystroke behaviour (the form validates on submit).
+ */
+async function fillField(user: ReturnType<typeof userEvent.setup>, label: string, value: string) {
+  await user.click(screen.getByLabelText(label))
+  await user.paste(value)
+}
+
 async function fillForm(
   user: ReturnType<typeof userEvent.setup>,
   values: { fullName: string; email: string; password: string; confirmPassword: string },
 ) {
-  await user.type(screen.getByLabelText('Full name'), values.fullName)
-  await user.type(screen.getByLabelText('Email'), values.email)
-  await user.type(screen.getByLabelText('Password'), values.password)
-  await user.type(screen.getByLabelText('Confirm password'), values.confirmPassword)
+  await fillField(user, 'Full name', values.fullName)
+  await fillField(user, 'Email', values.email)
+  await fillField(user, 'Password', values.password)
+  await fillField(user, 'Confirm password', values.confirmPassword)
+  // The values must have arrived (one paste each), or a mismatch could come from a lost input.
+  expect(screen.getByLabelText('Full name')).toHaveValue(values.fullName)
+  expect(screen.getByLabelText('Email')).toHaveValue(values.email)
+  expect(screen.getByLabelText('Password')).toHaveValue(values.password)
+  expect(screen.getByLabelText('Confirm password')).toHaveValue(values.confirmPassword)
 }
 
 describe('SignUpForm', () => {

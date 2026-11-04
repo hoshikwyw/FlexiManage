@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -101,14 +101,28 @@ describe('RecordsTab', () => {
     })
   })
 
-  it('debounces the search into the URL and resets the page', async () => {
-    const user = userEvent.setup()
-    mockRecords({ rows: [], total: 40 })
-    renderTab('?page=2')
-    await user.type(screen.getByLabelText('Search records'), 'glob')
-    expect(location().get('q')).toBeNull()
-    await waitFor(() => expect(location().get('q')).toBe('glob'))
-    expect(location().get('page')).toBeNull()
+  it('debounces the search into the URL and resets the page', () => {
+    // Fake timers: with real ones a loaded full run once let more than 300 ms pass between two
+    // keystrokes, so the debounce fired mid-word and the URL already held "g" when the test
+    // asserted it was still empty. Here time only moves when the test moves it. The input is
+    // driven with synchronous change events because user-event's async wrapper waits on a
+    // setTimeout(0) that Vitest's fake timers never fire.
+    vi.useFakeTimers()
+    try {
+      mockRecords({ rows: [], total: 40 })
+      renderTab('?page=2')
+      const box = screen.getByLabelText('Search records')
+      for (const value of ['g', 'gl', 'glo', 'glob']) {
+        fireEvent.change(box, { target: { value } })
+        act(() => vi.advanceTimersByTime(250))
+      }
+      expect(location().get('q')).toBeNull()
+      act(() => vi.advanceTimersByTime(50))
+      expect(location().get('q')).toBe('glob')
+      expect(location().get('page')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps a trailing space in the box when the trimmed term reaches the URL', async () => {

@@ -77,14 +77,43 @@ jobs:
       - name: Typecheck Edge Functions
         # Deno is not part of the local toolchain (functions run in the Docker edge runtime), so
         # this is the only place the functions are type-checked.
+        # DENO_NO_PACKAGE_JSON: see the tokenizer step below.
+        env:
+          DENO_NO_PACKAGE_JSON: '1'
         run: deno check --config supabase/functions/deno.json supabase/functions/*/index.ts
+
+      - name: Search tokenizer fixture under Deno
+        # tests/fixtures/search-tokenizer.json through supabase/functions/_shared/search.ts in the
+        # Deno runtime; the verify job checks the same fixture for the frontend under Vitest.
+        # DENO_NO_PACKAGE_JSON: this job has no node_modules, so Deno must not treat the repo's
+        # package.json as an npm project (it would look for @types/node there).
+        env:
+          DENO_NO_PACKAGE_JSON: '1'
+        run: deno test --no-lock --allow-read tests/parity/search-tokenizer.deno.ts
 
       - name: Edge Function smoke test
         # Status codes only: no credentials -> 401, non-member invite -> 403, unknown token -> 404.
         run: bash scripts/ci/functions-smoke.sh
 
+      - name: Purge drain check
+        # purge-attachments regression (review finding H2): one call drains 300 long-named queue
+        # entries and answers { purged, alreadyGone, retryable, dead }. Reads the service-role
+        # key from `supabase status -o env` without printing it.
+        run: bash scripts/ci/purge-drain-check.sh
+
       - name: Run pgTAP tests
         run: supabase test db
+
+      - name: Set up Node
+        # Node 24 runs the TypeScript concurrency test directly (type stripping); no npm install.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Concurrency tests
+        # Two real database sessions per case through the host psql client (ubuntu-latest ships
+        # one): attachment cap, field delete, option removal and update_record races.
+        run: npm run test:concurrency
 
       - name: Check generated types for drift
         run: |
