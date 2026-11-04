@@ -1,35 +1,49 @@
 import { defineConfig, devices } from '@playwright/test'
-import { loadEnv } from 'vite'
 
-const port = 4173
-const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${port}`
+import { APP_ORIGIN, appEnv, newRunId } from './tests/e2e/support/env'
 
-// The SPA throws at startup without VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY. Take them from
-// the process environment or the Vite env files (.env, .env.local, ...) and fall back to
-// placeholders so a clean clone can run the unauthenticated smoke spec. Real end-to-end tests
-// against the local stack need a `.env.local` that points at it (see README).
-const viteEnv = loadEnv('production', process.cwd(), 'VITE_')
-const supabaseEnv = {
-  VITE_SUPABASE_URL: viteEnv.VITE_SUPABASE_URL ?? 'https://e2e-placeholder.supabase.co',
-  VITE_SUPABASE_ANON_KEY: viteEnv.VITE_SUPABASE_ANON_KEY ?? 'e2e-placeholder-anon-key',
-}
+// One id per `playwright test` invocation, set before workers start so they all inherit it
+// (tests/e2e/support/env.ts). Data created by the run carries it; teardown deletes by it.
+process.env.E2E_RUN_ID ??= newRunId()
 
+const isCI = !!process.env.CI
+
+/**
+ * The app is served by the Vite dev server on http://localhost:5173: the Edge Functions' CORS
+ * allow-list contains exactly that origin (never 127.0.0.1), and specs load
+ * `/src/lib/supabase.ts` in the page for crafted Storage requests, which needs dev-mode modules.
+ * `appEnv` comes from the environment or the Vite env files (`.env.local` pointing at the local
+ * stack); without them it holds placeholders so a clean clone still runs the smoke spec, and the
+ * authenticated specs skip themselves.
+ */
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
-  forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
-  reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
+  forbidOnly: isCI,
+  retries: isCI ? 1 : 0,
+  workers: isCI ? 2 : undefined,
+  timeout: 60_000,
+  expect: { timeout: 15_000 },
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
+  globalSetup: './tests/e2e/global-setup.ts',
   use: {
-    baseURL,
+    baseURL: APP_ORIGIN,
+    locale: 'en-US',
+    timezoneId: 'UTC',
+    acceptDownloads: true,
     trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    actionTimeout: 15_000,
+    navigationTimeout: 30_000,
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'npm run build && npm run preview -- --port 4173 --strictPort',
-    url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    command: 'npm run dev -- --port 5173 --strictPort',
+    url: APP_ORIGIN,
+    reuseExistingServer: !isCI,
     timeout: 120_000,
-    env: supabaseEnv,
+    env: appEnv,
+    stdout: 'ignore',
+    stderr: 'pipe',
   },
 })

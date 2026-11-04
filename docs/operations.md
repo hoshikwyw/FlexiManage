@@ -58,10 +58,10 @@ secrets (Edge Functions).
   `tsconfig.app.json` (src, including co-located `*.test.tsx`), `tsconfig.node.json`
   (Vite/Vitest/Playwright configs) and `tsconfig.test.json` (`tests/`).
 - `shadcn` is a devDependency (CLI only); it is never bundled.
-- `npm run test:e2e` builds with `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` from the
-  environment or `.env*` files; without them `playwright.config.ts` injects placeholders so the
-  unauthenticated smoke spec runs on a clean clone. Authenticated e2e needs `.env.local` pointing
-  at the local stack.
+- `npm run test:e2e` serves the app with the Vite dev server on `http://localhost:5173` using
+  `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` from the environment or the `.env*` files;
+  without them `playwright.config.ts` injects placeholders, the unauthenticated smoke spec runs and
+  every other spec skips itself. See "End-to-end tests" below.
 
 ## Local Supabase
 
@@ -236,6 +236,85 @@ it never duplicates content; the fixed ids are listed in `docs/architecture.md`,
 `supabase/.temp` and `supabase/.branches` are ignored by git. Migrations are forward-only: never
 edit an applied file, add a new one and run `npm run db:reset`.
 
+### End-to-end tests
+
+Added 2026-11-04 (Part 15). Playwright 1.64, Chromium only, specs in `tests/e2e`, helpers in
+`tests/e2e/support`, global setup and teardown in `tests/e2e/global-setup.ts`.
+
+| Command                        | What it does                                                         |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `npm run test:e2e`             | All specs (smoke, journey, isolation, auth, validation; 33 tests).   |
+| `npm run test:e2e:smoke`       | The unauthenticated smoke spec only; needs no stack.                 |
+| `npm run test:e2e:ui`          | Playwright UI mode.                                                  |
+| `npx playwright show-report`   | Open the last HTML report (`playwright-report/`, git-ignored).       |
+
+Runtime requirements:
+
+- The local stack running (`npm run db:start`) and `.env.local` pointing at it
+  (`VITE_SUPABASE_URL=http://127.0.0.1:54321`). Authenticated specs only run when the URL is a
+  local `http://127.0.0.1:<port>` or `http://localhost:<port>` address, so the suite cannot write to
+  a hosted project by accident; otherwise they skip with a message.
+- The app under test is the Vite dev server on `http://localhost:5173` (`webServer` runs
+  `npm run dev -- --port 5173 --strictPort`; a running dev server is reused locally, never in CI).
+  It must be `localhost`, not `127.0.0.1`: the Edge Functions answer CORS for
+  `ALLOWED_ORIGIN=http://localhost:5173` only, and GoTrue's `site_url` is the same origin. The dev
+  server (not `vite preview`) is needed because `isolation.spec.ts` imports
+  `/src/lib/supabase.ts` in the page to call Storage with the signed-in user's own client.
+- Edge Functions: the global setup posts to `/functions/v1/invite-member` without credentials and
+  expects 401. Anything else (500 when the edge runtime container is stopped) makes it start
+  `supabase functions serve` in the background (log in `test-results/functions-serve.log`), wait up
+  to 120 s for the 401, and stop it (and the `supabase_edge_runtime_fleximanage` container) in
+  teardown. A runtime that was already serving is left alone. The CLI recreates the runtime
+  container on any file event in the served folder (about 5 s in which requests fail), so setup
+  serves a snapshot copy of `supabase/config.toml` and `supabase/functions` from a temp directory
+  (`--workdir`, removed in teardown): saving a function during a run cannot break the run, and the
+  run tests the functions as they were when it started. Teardown warns if a reload happened anyway.
+- Database access as `postgres` (`tests/e2e/support/db.ts`): `psql` with
+  `postgresql://postgres:postgres@127.0.0.1:54322/postgres` when a `psql` client is on PATH (CI),
+  otherwise `docker exec -i supabase_db_fleximanage psql -U postgres -d postgres -Atc ...` (local
+  Windows without a Postgres client). `E2E_DB_MODE=psql|docker` and `E2E_DB_URL` override it.
+  Used for invitation tokens (never returned by the API, no email yet), row counts and cleanup.
+- Mailpit at `http://127.0.0.1:54324` (`E2E_MAILPIT_URL`): `auth.spec.ts` reads the
+  password-reset link through `/api/v1/search` and `/api/v1/message/<id>`.
+
+Conventions:
+
+- Unique data per run: `playwright.config.ts` sets `E2E_RUN_ID` once in the main process (workers
+  inherit it). Users are `e2e-<run id>-<spec>-<nonce>-<name>@example.com`; workspace, module and
+  record names carry `<run id>-<nonce>`. The nonce is per worker, so a retried serial group (a new
+  worker) never collides with the failed attempt. Nothing assumes an empty database; three runs in
+  a row without `db:reset` pass.
+- Seed users are used read-only, and only by `isolation.spec.ts` (alice and bob) and the
+  teardown assertion. Every other spec signs up its own owner (through the UI in the journey,
+  through `/auth/v1/signup` elsewhere) and works in its own workspace, so specs can run in
+  parallel. The isolation spec adds one attachment to the seed record Acme Ltd in setup and
+  removes it (object, then row) in teardown.
+- Cleanup: each spec deletes its users with `delete from auth.users where email like
+  '<prefix>%'` as `postgres` in `afterAll`. That is an account deletion: `on_auth_user_deleted`
+  deletes the workspaces they owned alone, and modules, records, invitations and attachment rows
+  cascade (objects are queued in `storage_deletion_queue`). The global teardown deletes any
+  leftover `e2e-<run id>-%` user, calls `purge-attachments` with the local service-role key read
+  from `supabase status -o env` in memory (never printed or written), and fails the run unless
+  alice's only membership is owner of `workspace-a`, bob's only membership is owner of
+  `workspace-b`, and Clients has exactly 3 records. The global setup removes `e2e-%@example.com`
+  users older than three hours (aborted runs).
+- Selectors go by role and label. Exceptions: `[data-field-key]` scopes a `definition` on the
+  record detail page, and Storage is driven through the app's own client for the crafted-request
+  checks. Files are picked through the "Choose files" button and the `filechooser` event, and
+  downloads are read from the `download` event (byte equality, CSV BOM and lines).
+- No fixed sleeps. Waiting is done with web-first assertions (`toHaveText`, `toHaveURL`,
+  `toHaveAttribute`), `expect.poll` for Mailpit, and events (`download`, `filechooser`). "No
+  request was sent" is asserted after the client-side errors have rendered, because the Zod and
+  attachment checks run synchronously before any request would be made.
+- Serial files (`journey`, `isolation`, `validation`) share pages created in `beforeAll`; a
+  failure skips the rest of the file and a CI retry reruns the whole file with new data.
+- Settings: `retries` 1 in CI and 0 locally, 2 workers in CI, trace on the first retry,
+  screenshot on failure, reporters `list` and `html` (`playwright-report/`), locale `en-US`,
+  timezone UTC.
+
+Local timing on 2026-11-04 (Windows 11, Docker Desktop, default worker count): 96 to 106 s per run of
+the 33 tests, including starting the dev server and `supabase functions serve`.
+
 ## Attachments bucket
 
 Migration 005 creates the private Storage bucket `attachments` (10 MB per file, MIME allow-list
@@ -278,7 +357,7 @@ with `statusCode` 403 or 404 in the JSON body.
 
 ## CI
 
-`.github/workflows/ci.yml` has two independent jobs on `ubuntu-latest`. Actions are pinned to major
+`.github/workflows/ci.yml` has three independent jobs on `ubuntu-latest`. Actions are pinned to major
 versions (`actions/checkout@v4`, `actions/setup-node@v4`, `supabase/setup-cli@v1`), the npm cache
 is enabled and concurrency cancels superseded runs on the same ref.
 
@@ -299,7 +378,16 @@ is enabled and concurrency cancels superseded runs on the same ref.
   `supabase functions serve` itself and stops it afterwards. Run it locally with
   `bash scripts/ci/functions-smoke.sh` (needs curl, and jq or node).
 
-Planned: an `e2e` job on pull requests to `main` with Playwright browsers cached.
+- `e2e` (added 2026-11-04): only on pull requests into `main` and pushes to `main` (job-level
+  `if`), 30-minute timeout. `npm ci`, Supabase CLI `2.122.0`, `supabase start`, then `.env.local`
+  is written from `supabase status -o env` with the API URL and anon key only (masked, never
+  echoed). Playwright browsers are cached in `~/.cache/ms-playwright` keyed by the
+  `@playwright/test` version; `npx playwright install --with-deps chromium` still runs for the
+  system packages. `npm run test:e2e` (`CI` is set: no server reuse, 1 retry, 2 workers); the
+  global setup starts `supabase functions serve` if the edge runtime does not answer, like
+  `scripts/ci/functions-smoke.sh`. On failure `playwright-report/` and `test-results/` are
+  uploaded as the `playwright-report` artifact (7 days). `supabase stop --no-backup` always runs.
+  Written and YAML-validated on 2026-11-04 (`npx -y js-yaml`); not yet run on GitHub.
 
 ## Free-tier notes
 

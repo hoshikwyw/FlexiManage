@@ -109,7 +109,9 @@ Add shadcn/ui components with `npx shadcn@latest add <component>`; they land in 
 | `npm run format:check`    | Verify formatting without writing (used in CI).                                                                                                    |
 | `npm run test`            | Run unit and component tests once with Vitest (jsdom).                                                                                             |
 | `npm run test:watch`      | Run Vitest in watch mode.                                                                                                                          |
-| `npm run test:e2e`        | Run Playwright end-to-end tests in `tests/e2e` (builds and previews first; see End-to-end tests).                                                  |
+| `npm run test:e2e`        | Run every Playwright spec in `tests/e2e` against the Vite dev server on `localhost:5173` (see End-to-end tests).                                   |
+| `npm run test:e2e:smoke`  | Run only the unauthenticated smoke spec (works on a clean clone without a Supabase stack).                                                         |
+| `npm run test:e2e:ui`     | Open Playwright UI mode for running and debugging specs interactively.                                                                             |
 | `npm run test:db`         | Run the pgTAP database tests in `supabase/tests` against the local stack (passes on a fresh or a used database).                                   |
 | `npm run test:db:fresh`   | `db:reset` then `test:db`: the CI-equivalent run against a freshly seeded database.                                                                |
 | `npm run db:start`        | Start the local Supabase stack in Docker (`supabase start`).                                                                                       |
@@ -127,12 +129,42 @@ CI helper scripts live in `scripts/ci` and are plain bash (LF):
 
 ## End-to-end tests
 
-`npm run test:e2e` builds the app and serves it with `vite preview` on port 4173. The build needs
-`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`; `playwright.config.ts` takes them from the
-environment or the Vite env files and otherwise injects placeholders, so a clean clone can run
-the unauthenticated smoke spec without a Supabase project. Tests that sign in or touch data need
-a real backend: start the local stack (`npm run db:start`) and point `.env.local` at it as
-described in Setup; placeholders are not used when `.env.local` defines the two variables.
+The Playwright suite in `tests/e2e` covers the primary journey and the key negative paths:
+
+| Spec                 | What it proves                                                                                                                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `smoke.spec.ts`      | An unauthenticated visit redirects to sign-in. Needs no backend.                                                                                                                                                               |
+| `journey.spec.ts`    | Sign up, create a workspace, apply "Housekeeping tasks", create, search, filter and edit records, upload and download a file, export CSV, invite a member who sees the records but not Export or the danger zone, remove them. |
+| `isolation.spec.ts`  | Bob (Workspace B) gets "not found" for alice's workspace, module, record and members URLs, does not see Workspace A in the switcher, and cannot sign, download or upload Storage objects under Workspace A.                    |
+| `auth.spec.ts`       | Sign-in validation and wrong password, redirect back after sign-in, sign-out, password reset through the Mailpit link.                                                                                                         |
+| `validation.spec.ts` | Record form required errors without a request, server-side required error on a field added meanwhile, duplicate module slug, `.exe` and 11 MB attachments refused without a row.                                               |
+
+Prerequisites for everything except the smoke spec:
+
+1. Docker running and the local stack started: `npm run db:start` (migrations and seed applied).
+2. `.env.local` pointing at it (`VITE_SUPABASE_URL=http://127.0.0.1:54321` and the anon key, see
+   Setup). Authenticated specs skip themselves with a message when the URL is a placeholder or not a
+   local address; the suite never runs against a hosted project.
+3. Playwright Chromium: `npx playwright install --with-deps chromium`.
+
+Then run `npm run test:e2e`. Playwright starts `npm run dev -- --port 5173 --strictPort` (or
+reuses a dev server that is already running, locally only) and opens the app on
+**`http://localhost:5173`**, never `127.0.0.1`: the Edge Functions' CORS allow-list contains that
+origin only. The global setup checks that the stack answers and that the Edge Functions return 401
+without credentials; if the edge runtime is not serving them it starts `supabase functions serve`
+itself and stops it at the end. You do not need `npm run functions:serve` running, but it does no
+harm.
+
+The suite runs on a used database and leaves the seed intact: every user it creates is called
+`e2e-<run id>-<spec>-...@example.com` and every workspace and module name carries the run id, so
+runs never collide. Each spec deletes its users at the end (an account deletion, which removes the
+workspaces they owned alone); the global teardown removes leftovers of the run, purges deleted
+attachment objects through `purge-attachments`, and fails the run if alice no longer owns exactly
+Workspace A, bob exactly Workspace B, or Clients no longer has three records. Invitation tokens are
+read from the database and password-reset links from Mailpit (`http://127.0.0.1:54324`). Reports:
+`playwright-report/` (HTML, git-ignored; `npx playwright show-report`) and `test-results/`
+(screenshots on failure, traces on the first retry in CI). Conventions are in
+`docs/operations.md`, "End-to-end tests".
 
 ## Local database
 
@@ -171,4 +203,6 @@ and `bob@example.com` (owns `workspace-b`), password `password123`; fixed ids li
 enabled (`verify`), and in parallel starts the local Supabase stack, type-checks the Edge
 Functions with Deno (`deno check`), runs `scripts/ci/functions-smoke.sh` against the served
 functions, runs the pgTAP tests and fails if `src/types/supabase.ts` is out of date with the
-migrations (`db-tests`). A Playwright job follows once the primary journey exists.
+migrations (`db-tests`). On pull requests into `main` and pushes to `main` the `e2e` job starts
+the stack and runs `npm run test:e2e` with Chromium; on failure the HTML report and traces are
+uploaded as the `playwright-report` artifact.

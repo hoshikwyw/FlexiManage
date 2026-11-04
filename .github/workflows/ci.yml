@@ -97,3 +97,85 @@ jobs:
       - name: Stop local Supabase stack
         if: always()
         run: supabase stop --no-backup
+
+  e2e:
+    name: End-to-end tests (Playwright)
+    # Pull requests into main and pushes to main only; the workflow itself runs on every push.
+    if: >-
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          # Keep in sync with the `supabase` devDependency in package.json.
+          version: 2.122.0
+
+      - name: Start local Supabase stack
+        # Applies supabase/migrations and supabase/seed.sql; the edge runtime serves the functions.
+        run: supabase start
+
+      - name: Write .env.local for the dev server
+        # Only the API URL and the anon key, read without echoing. The service-role key is never
+        # written anywhere (the global teardown reads it in memory for purge-attachments).
+        run: |
+          STATUS_ENV=$(supabase status -o env 2>/dev/null)
+          API_URL=$(printf '%s\n' "$STATUS_ENV" | sed -nE 's/^API_URL="?([^"]*)"?$/\1/p' | head -n 1)
+          ANON_KEY=$(printf '%s\n' "$STATUS_ENV" | sed -nE 's/^ANON_KEY="?([^"]*)"?$/\1/p' | head -n 1)
+          unset STATUS_ENV
+          if [ -z "$API_URL" ] || [ -z "$ANON_KEY" ]; then
+            echo "::error::API_URL or ANON_KEY missing from 'supabase status -o env'"
+            exit 1
+          fi
+          echo "::add-mask::$ANON_KEY"
+          umask 077
+          printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_ANON_KEY=%s\n' "$API_URL" "$ANON_KEY" > .env.local
+
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Playwright Chromium and system dependencies
+        # System packages are not cached, so this runs on a cache hit too (browser download skipped).
+        run: npx playwright install --with-deps chromium
+
+      - name: Run end-to-end tests
+        # tests/e2e/global-setup.ts checks the stack and probes the Edge Functions (401 without
+        # credentials); if the edge runtime does not answer it starts `supabase functions serve`
+        # itself and stops it in teardown, the same logic as scripts/ci/functions-smoke.sh.
+        # The teardown fails the job if the seed changed.
+        run: npm run test:e2e
+
+      - name: Upload Playwright report and traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      - name: Stop local Supabase stack
+        if: always()
+        run: supabase stop --no-backup

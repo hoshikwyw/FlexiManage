@@ -134,7 +134,7 @@ Agents: supabase-engineer, frontend-dev, test-engineer, code-reviewer.
 - [x] (done 2026-11-04) CSV export via Edge Function `export-records` with audit event (supabase-engineer backend, frontend-dev button). Owner/admin only, search and the records filters, 50,000-row cap (`export_too_large`), `records.exported`; frontend part done 2026-11-04: "Export CSV" on the Records tab (owner/admin, disabled at zero rows) exports the current search and filters.
 - [x] (done 2026-11-04, frontend part) Module templates (added 2026-11-03, Epic B6): templates shipped as code under `src/features/modules/lib/templates.ts` ("Blank", "Housekeeping tasks" = D1 default, "Clients"); "start from a template" on an empty modules list and in "New module". Open for supabase-engineer: the create is sequential (module insert, then field inserts, best-effort delete on failure), not one transaction; a `create_module_with_fields` SQL function or Edge Function can replace `applyTemplate`'s writer without touching the UI.
 - [ ] Unit tests for field registry and Zod schema generation; component tests for form and table (test-engineer).
-- [ ] Playwright primary journey (test-engineer).
+- [x] (done 2026-11-04) Playwright primary journey (test-engineer). `tests/e2e`: `journey`, `isolation`, `auth`, `validation` and `smoke` specs (33 tests) against the dev server on `localhost:5173` and the local stack, unique per-run data with cleanup and a seed check in the global teardown, CI job `e2e` on pull requests into and pushes to `main`; see `docs/operations.md`, "End-to-end tests". Not yet run on GitHub Actions.
 - [ ] Code review of each feature before merge (code-reviewer).
 
 Exit criteria: the chosen workflow from D1 can be completed end to end with real data from a prospect.
