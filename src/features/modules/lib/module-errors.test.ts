@@ -16,7 +16,10 @@ import {
   OPTIONS_INVALID_MESSAGE,
   SETTINGS_INVALID_MESSAGE,
   TYPE_LOCKED_MESSAGE,
+  MODULE_NAME_TAKEN_MESSAGE,
   getModuleErrorMessage,
+  getModuleFormErrorMessage,
+  moduleFieldError,
 } from './module-errors'
 
 function pgError(code: string, message = 'raw database text', details = '') {
@@ -101,5 +104,58 @@ describe('getModuleErrorMessage', () => {
       GENERIC_MODULE_ERROR_MESSAGE,
     )
     expect(getModuleErrorMessage(undefined)).toBe(GENERIC_MODULE_ERROR_MESSAGE)
+  })
+})
+
+describe('moduleFieldError', () => {
+  it('maps a modules unique violation to the slug input by default', () => {
+    expect(
+      moduleFieldError(
+        pgError(
+          '23505',
+          'duplicate key value violates unique constraint "modules_workspace_id_slug_key"',
+          'Key (workspace_id, slug)=(ws, clients) already exists.',
+        ),
+      ),
+    ).toEqual({ field: 'slug', message: MODULE_SLUG_TAKEN_MESSAGE })
+  })
+
+  it('maps a constraint or key naming the module name to the name input', () => {
+    expect(
+      moduleFieldError(
+        pgError(
+          '23505',
+          'duplicate key value violates unique constraint "modules_workspace_id_name_key"',
+        ),
+      ),
+    ).toEqual({ field: 'name', message: MODULE_NAME_TAKEN_MESSAGE })
+    expect(
+      moduleFieldError(
+        pgError(
+          '23505',
+          'duplicate key',
+          'Key (workspace_id, lower(name))=(ws, clients) already exists.',
+        ),
+      )?.field,
+    ).toBe('name')
+  })
+
+  it('ignores field key clashes and other codes', () => {
+    expect(
+      moduleFieldError(
+        pgError(
+          '23505',
+          'duplicate key value violates unique constraint "field_definitions_module_id_key_key"',
+        ),
+      ),
+    ).toBeNull()
+    expect(moduleFieldError(pgError('42501'))).toBeNull()
+    expect(moduleFieldError(new Error('x'))).toBeNull()
+  })
+
+  it('getModuleFormErrorMessage stays silent for input-level errors', () => {
+    expect(getModuleFormErrorMessage(pgError('23505', 'modules_workspace_id_slug_key'))).toBeNull()
+    expect(getModuleFormErrorMessage(null)).toBeNull()
+    expect(getModuleFormErrorMessage(pgError('42501'))).toBe(MODULE_FORBIDDEN_MESSAGE)
   })
 })

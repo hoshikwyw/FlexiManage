@@ -1,7 +1,7 @@
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { useFieldDefinitions } from '@/features/modules/api/use-field-definitions'
 import { createClientsFields, TEST_MODULE_ID, TEST_WORKSPACE_ID } from '@/test/fields'
@@ -24,7 +24,15 @@ vi.mock('../api/use-records', () => ({ useRecords: vi.fn() }))
 
 function LocationProbe() {
   const location = useLocation()
-  return <output data-testid="location">{location.search}</output>
+  const navigate = useNavigate()
+  return (
+    <>
+      <output data-testid="location">{location.search}</output>
+      <button type="button" onClick={() => void navigate({ search: '?q=globex' })}>
+        Go to globex
+      </button>
+    </>
+  )
 }
 
 function mockRecords(page: RecordsPage) {
@@ -101,6 +109,31 @@ describe('RecordsTab', () => {
     expect(location().get('q')).toBeNull()
     await waitFor(() => expect(location().get('q')).toBe('glob'))
     expect(location().get('page')).toBeNull()
+  })
+
+  it('keeps a trailing space in the box when the trimmed term reaches the URL', async () => {
+    const user = userEvent.setup()
+    mockRecords({ rows: [], total: 40 })
+    renderTab()
+    const box = screen.getByLabelText('Search records')
+    await user.type(box, 'acme ')
+    await waitFor(() => expect(location().get('q')).toBe('acme'))
+    expect(box).toHaveValue('acme ')
+    await user.type(box, 'ltd')
+    expect(box).toHaveValue('acme ltd')
+    await waitFor(() => expect(location().get('q')).toBe('acme ltd'))
+    expect(box).toHaveValue('acme ltd')
+  })
+
+  it('still replaces the box when the URL search changes to another term', async () => {
+    const user = userEvent.setup()
+    mockRecords({ rows: [], total: 0 })
+    renderTab('?q=acme')
+    const box = screen.getByLabelText('Search records')
+    expect(box).toHaveValue('acme')
+    // Back/forward or a shared link: the URL now means another search.
+    await user.click(screen.getByRole('button', { name: 'Go to globex' }))
+    await waitFor(() => expect(box).toHaveValue('globex'))
   })
 
   it('applies a select filter from the filter row and resets the page', async () => {

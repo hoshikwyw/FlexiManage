@@ -13,17 +13,31 @@ export const CSV_BOM = '﻿'
 /** Line terminator required by RFC 4180. */
 export const CSV_EOL = '\r\n'
 
-/** First characters that make spreadsheet applications evaluate a cell. */
-const FORMULA_TRIGGERS = new Set(['=', '+', '-', '@', '\t', '\r'])
+/**
+ * Characters that make spreadsheet applications evaluate a cell, including the fullwidth forms
+ * (U+FF1D, U+FF0B, U+FF0D, U+FF20) that some applications normalise to ASCII.
+ */
+const FORMULA_TRIGGERS = new Set(['=', '+', '-', '@', '＝', '＋', '－', '＠'])
 
 /**
- * Prefixes a text cell with a single quote when it starts with `=`, `+`, `-`,
- * `@`, tab or carriage return (CSV/formula injection, OWASP). Apply it to every
- * cell that holds user text; numbers produced by `formatNumber` are exempt so a
- * negative amount stays a number.
+ * Leading characters skipped before looking for a trigger: every whitespace character JavaScript
+ * knows (`\s` covers tab, CR, LF, NBSP, U+1680, U+2000-200A, U+2028/2029, U+202F, U+205F, U+3000,
+ * U+FEFF) and quote characters (a cell like `"=cmd` or `'=cmd` is still evaluated by some
+ * importers once the quote is stripped).
+ */
+const LEADING_NOISE = /^[\s"'‘’“”]+/u
+
+/**
+ * Prefixes a text cell with a single quote when it starts with tab or carriage return, or when its
+ * first character after leading whitespace and quotes is `=`, `+`, `-`, `@` or a fullwidth form of
+ * them (CSV/formula injection, OWASP). Apply it to every cell that holds user text; numbers
+ * produced by `formatNumber` are exempt so a negative amount stays a number.
  */
 export function neutralizeFormula(value: string): string {
-  return value.length > 0 && FORMULA_TRIGGERS.has(value[0]!) ? `'${value}` : value
+  if (value.length === 0) return value
+  if (value[0] === '\t' || value[0] === '\r') return `'${value}`
+  const first = value.replace(LEADING_NOISE, '')[0]
+  return first !== undefined && FORMULA_TRIGGERS.has(first) ? `'${value}` : value
 }
 
 /**
@@ -161,14 +175,32 @@ export function recordCells(
   ]
 }
 
-/** Whole document: BOM, header, one row per record. */
-export function buildCsv(fields: readonly CsvField[], records: readonly CsvRecord[]): string {
-  const labelsByKey = new Map(
+/** Option labels of every select field, keyed by field key (computed once per export). */
+export function selectLabelsByKey(fields: readonly CsvField[]): Map<string, Map<string, string>> {
+  return new Map(
     fields.filter((f) => f.type === 'select').map((f) => [f.key, optionLabels(f.options)]),
   )
-  let out = CSV_BOM + csvRow(headerCells(fields))
+}
+
+/** Start of the document: BOM and header row. Streaming writers send this first. */
+export function csvPreamble(fields: readonly CsvField[]): string {
+  return CSV_BOM + csvRow(headerCells(fields))
+}
+
+/** Rows for a page of records, each CRLF-terminated. */
+export function csvRecordRows(
+  records: readonly CsvRecord[],
+  fields: readonly CsvField[],
+  labelsByKey: ReadonlyMap<string, Map<string, string>> = selectLabelsByKey(fields),
+): string {
+  let out = ''
   for (const record of records) out += csvRow(recordCells(record, fields, labelsByKey))
   return out
+}
+
+/** Whole document: BOM, header, one row per record (`csvPreamble` + `csvRecordRows`). */
+export function buildCsv(fields: readonly CsvField[], records: readonly CsvRecord[]): string {
+  return csvPreamble(fields) + csvRecordRows(records, fields)
 }
 
 /**

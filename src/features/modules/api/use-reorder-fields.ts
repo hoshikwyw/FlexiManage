@@ -39,7 +39,8 @@ export interface ReorderFieldsVariables {
 
 /**
  * Persists a new order with one position update per field whose position
- * changed (PostgREST has no batch update; fields are capped at 50 per module).
+ * changed (PostgREST has no batch update; a module has a handful of fields, so
+ * the number of requests stays small; the database sets no field cap).
  * The list is updated optimistically in `onMutate` and refetched afterwards;
  * the diff is taken against `previous` because by the time `mutationFn` runs
  * the cache already holds the new order.

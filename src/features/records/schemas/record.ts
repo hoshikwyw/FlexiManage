@@ -5,6 +5,7 @@ import {
   buildRecordSchema,
   type CustomValues,
 } from '@/features/records/fields/build-record-schema'
+import { FIELD_TYPE_REGISTRY } from '@/features/records/fields/registry'
 import type { FieldDefinition } from '@/types/database'
 
 import type { RecordItem } from '../types'
@@ -47,19 +48,21 @@ export function emptyRecordFormValues(fields: readonly FieldDefinition[]): Recor
 
 /**
  * Form values of an existing record: each current field gets the stored value
- * or the type default; keys without a definition are left out (the strict
- * schema would reject them and the server strips deleted keys anyway).
+ * or the registry's `emptyValue` ("no value", never an invented default: a
+ * checkbox that was never set stays unset instead of becoming `false`); keys
+ * without a definition are left out (the strict schema would reject them and
+ * the server strips deleted keys anyway).
  */
 export function recordToFormValues(
   record: Pick<RecordItem, 'title' | 'status' | 'custom_values'>,
   fields: readonly FieldDefinition[],
 ): RecordFormValues {
   const stored = readCustomValues(record.custom_values)
-  const defaults = buildDefaultValues(fields)
   const custom_values: CustomValues = {}
   for (const field of fields) {
     const value = stored[field.key]
-    custom_values[field.key] = value === undefined || value === null ? defaults[field.key] : value
+    custom_values[field.key] =
+      value === undefined || value === null ? FIELD_TYPE_REGISTRY[field.type].emptyValue : value
   }
   return { title: record.title, status: record.status ?? '', custom_values }
 }

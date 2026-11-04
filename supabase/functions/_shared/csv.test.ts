@@ -7,6 +7,8 @@ import {
   buildCsv,
   CSV_BOM,
   type CsvField,
+  csvPreamble,
+  csvRecordRows,
   csvRow,
   exportFileName,
   formatFieldCell,
@@ -46,6 +48,35 @@ Deno.test('neutralizeFormula prefixes the six trigger characters only', () => {
   assertEquals(neutralizeFormula('a=b'), 'a=b')
   assertEquals(neutralizeFormula(''), '')
   assertEquals(neutralizeFormula("'quoted"), "'quoted")
+})
+
+Deno.test('neutralizeFormula looks past leading whitespace, including Unicode spaces (L1)', () => {
+  for (const lead of [' ', '  ', '\n', ' ', ' ', '　', '﻿', '   ']) {
+    assertEquals(neutralizeFormula(`${lead}=1+1`), `'${lead}=1+1`, JSON.stringify(lead))
+    assertEquals(neutralizeFormula(`${lead}@SUM(A1)`), `'${lead}@SUM(A1)`, JSON.stringify(lead))
+  }
+  assertEquals(neutralizeFormula('  plain'), '  plain')
+  assertEquals(neutralizeFormula(' '), ' ')
+})
+
+Deno.test('neutralizeFormula guards the fullwidth forms', () => {
+  for (const c of ['＝', '＋', '－', '＠']) {
+    assertEquals(neutralizeFormula(`${c}cmd`), `'${c}cmd`, JSON.stringify(c))
+    assertEquals(neutralizeFormula(` ${c}cmd`), `' ${c}cmd`, JSON.stringify(c))
+  }
+})
+
+Deno.test('neutralizeFormula guards a trigger after leading quote characters', () => {
+  assertEquals(neutralizeFormula('"=HYPERLINK("x")'), `'"=HYPERLINK("x")`)
+  assertEquals(neutralizeFormula("'=1+1"), "''=1+1")
+  assertEquals(neutralizeFormula(' " -2'), `' " -2`)
+  assertEquals(neutralizeFormula('“=cmd”'), `'“=cmd”`)
+  assertEquals(neutralizeFormula('"quoted text"'), '"quoted text"')
+  assertEquals(
+    csvRow([textCell(' "=cmd')]),
+    '"\' ""=cmd"\r\n',
+    'guard applied before RFC 4180 quoting',
+  )
 })
 
 Deno.test('quoteField follows RFC 4180', () => {
@@ -101,6 +132,23 @@ Deno.test('buildCsv: BOM, header, rows, CRLF', () => {
     'Title,Record status,Company,Status,Contract value,Due date,Done,Qty,Created at,Updated at\r\n' +
       '"Acme, Ltd",,\'@SUM(A1),Lead,-1,,TRUE,,2026-11-04T09:30:00.123Z,2026-11-04T10:00:00.000Z\r\n',
   )
+})
+
+Deno.test('csvPreamble + csvRecordRows per page equal buildCsv', () => {
+  const records = [1, 2, 3].map((n) => ({
+    title: `Row ${n}`,
+    status: null,
+    custom_values: { status: 'active', qty: n },
+    created_at: '2026-11-04T09:30:00Z',
+    updated_at: '2026-11-04T09:30:00Z',
+  }))
+  const streamed =
+    csvPreamble(fields) +
+    csvRecordRows(records.slice(0, 2), fields) +
+    csvRecordRows(records.slice(2), fields)
+  assertEquals(streamed, buildCsv(fields, records))
+  assertEquals(csvPreamble(fields).startsWith(CSV_BOM), true)
+  assertEquals(csvRecordRows([], fields), '')
 })
 
 Deno.test('exportFileName uses the slug and the UTC date', () => {

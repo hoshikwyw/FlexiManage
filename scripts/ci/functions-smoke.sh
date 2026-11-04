@@ -10,6 +10,7 @@
 #   3. alice@example.com accepts a garbage invitation token -> 404
 #   4. alice@example.com exports a module of a workspace she is not a member of -> 403
 #   5. alice@example.com exports the seed module Clients of Workspace A -> 200, text/csv
+#   6. alice@example.com asks attachment-url for a random attachment id -> 404 (not_found)
 #
 # `supabase start` normally serves the functions at <API_URL>/functions/v1/<name> through the
 # edge runtime container. If the probe shows the runtime is not answering (for example after a
@@ -157,6 +158,9 @@ assert_status "export-records for a workspace the caller is not a member of" 403
 # Seed ids (supabase/seed.sql, tests/fixtures/ids.ts): Workspace A and its module Clients.
 EXPORT_BODY='{"workspaceId":"00000000-0000-0000-0000-0000000000aa","moduleId":"00000000-0000-0000-0000-0000000a0001"}'
 assert_status "export-records of the seed module Clients (status and content type)" "200 text/csv"   "$(status_and_type "$FUNCTIONS_URL/export-records" "$USER_HEADERS" "$EXPORT_BODY")"
+
+ATTACHMENT_URL_BODY=$(printf '{"attachmentId":"%s"}' "$(random_uuid)")
+assert_status "attachment-url for a random attachment id" 404   "$(status_of "$FUNCTIONS_URL/attachment-url" "$USER_HEADERS" "$ATTACHMENT_URL_BODY")"
 
 if [ "$FAILURES" -ne 0 ]; then
   fail "$FAILURES function smoke assertion(s) failed"

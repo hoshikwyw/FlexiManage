@@ -1,4 +1,4 @@
--- 01: structural guarantees of migrations 001 to 005.
+-- 01: structural guarantees of migrations 001 to 006.
 --   * every table in public has row level security enabled
 --   * anon has no privilege on any public table; authenticated has exactly the
 --     table and column grants documented in docs/architecture.md (migration 003
@@ -10,6 +10,11 @@
 --   * migration 005 adds attachments (select/delete at table level, insert
 --     column-level on workspace_id, record_id, file_name, content_type,
 --     size_bytes; no update) and storage_deletion_queue (nothing for API roles)
+--   * migration 006 removes `id` from the insert grants of modules,
+--     field_definitions and records, adds attachments.uploaded_at (read
+--     only), drops the storage select/delete helpers and adds update_record
+--     (authenticated), the maintenance functions (no API role) and the
+--     pure helpers text_is_blank / record_search_document
 --   * the policy set per table matches the documented names
 --   * RLS helpers (and workspace_usage) are security definer, stable, have a
 --     fixed search_path and are executable by authenticated only; trigger
@@ -21,7 +26,7 @@
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(214);
+select plan(241);
 
 -- ---------------------------------------------------------------------------
 -- Row level security
@@ -144,7 +149,11 @@ select column_privs_are('public', 'attachments', c, 'authenticated', array['SELE
 from unnest(array['workspace_id', 'record_id', 'file_name', 'content_type', 'size_bytes']) c;
 select column_privs_are('public', 'attachments', c, 'authenticated', array['SELECT'],
   format('authenticated may only read attachments.%s', c))
-from unnest(array['id', 'storage_path', 'uploaded_by', 'created_at']) c;
+from unnest(array['id', 'storage_path', 'uploaded_by', 'created_at', 'uploaded_at']) c;
+-- Migration 006: ids are never client-chosen on the content tables.
+select column_privs_are('public', t, 'id', 'authenticated', array['SELECT'],
+  format('authenticated may read but not supply %s.id (migration 006)', t))
+from unnest(array['modules', 'field_definitions', 'records']) t;
 
 -- ---------------------------------------------------------------------------
 -- Policies: one per command, named <table>_<command>_<who>
@@ -204,9 +213,7 @@ insert into helper_fn values
   ('current_user_workspace_ids', '{}'::text[]),
   ('shares_workspace_with', array['uuid']),
   ('workspace_usage', array['uuid']),
-  ('can_read_attachment_object', array['text']),
-  ('can_upload_attachment_object', array['text', 'jsonb']),
-  ('can_delete_attachment_object', array['text']);
+  ('can_upload_attachment_object', array['text', 'jsonb']);
 
 select is_definer('public', fname, fargs, format('%s is security definer', fname)) from helper_fn;
 select volatility_is('public', fname, fargs, 'stable', format('%s is stable', fname)) from helper_fn;
@@ -228,7 +235,9 @@ insert into pure_fn values
   ('field_options_are_valid', array['public.field_type', 'jsonb']),
   ('field_settings_are_valid', array['public.field_type', 'jsonb']),
   ('attachment_content_type_is_allowed', array['text']),
-  ('attachment_file_name_is_valid', array['text']);
+  ('attachment_file_name_is_valid', array['text']),
+  ('text_is_blank', array['text']),
+  ('record_search_document', array['text', 'text', 'jsonb']);
 
 select volatility_is('public', fname, fargs, 'immutable', format('%s is immutable', fname)) from pure_fn;
 select isnt_definer('public', fname, fargs, format('%s is not security definer', fname)) from pure_fn;
@@ -255,7 +264,9 @@ insert into trigger_fn values
   ('audit_field_change', true),
   ('enforce_attachment_cap', true),
   ('audit_attachment_change', true),
-  ('enqueue_attachment_object_deletion', true);
+  ('enqueue_attachment_object_deletion', true),
+  ('audit_record_delete', true),
+  ('reconcile_attachment_object', true);
 
 select is_definer('public', fname, '{}'::text[], format('%s is security definer', fname))
 from trigger_fn where definer;
@@ -273,10 +284,29 @@ from pg_proc p
 where p.pronamespace = 'public'::regnamespace
 order by p.proname;
 
+-- Migration 006: update_record is security invoker and callable by
+-- authenticated; the maintenance functions are security definer and not
+-- callable by any API role (sweep_stale_attachments: service_role only).
+select isnt_definer('public', 'update_record', array['uuid', 'timestamptz', 'jsonb'],
+  'update_record is security invoker (RLS applies)');
+select function_privs_are('public', 'update_record', array['uuid', 'timestamptz', 'jsonb'], 'authenticated', array['EXECUTE'],
+  'authenticated can execute update_record');
+select function_privs_are('public', 'update_record', array['uuid', 'timestamptz', 'jsonb'], 'anon', '{}'::text[],
+  'anon cannot execute update_record');
+select is_definer('public', f, '{}'::text[], format('%s is security definer', f))
+from unnest(array['sweep_stale_attachments', 'invoke_purge_attachments', 'schedule_storage_maintenance']) f;
+select function_privs_are('public', f, '{}'::text[], r, '{}'::text[], format('%s cannot execute %s', r, f))
+from unnest(array['sweep_stale_attachments', 'invoke_purge_attachments', 'schedule_storage_maintenance']) f,
+     unnest(array['anon', 'authenticated']) r;
+select function_privs_are('public', 'sweep_stale_attachments', '{}'::text[], 'service_role', array['EXECUTE'],
+  'service_role can execute sweep_stale_attachments');
+select function_privs_are('public', f, '{}'::text[], 'service_role', '{}'::text[], format('service_role cannot execute %s', f))
+from unnest(array['invoke_purge_attachments', 'schedule_storage_maintenance']) f;
+
 select is(
   (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace),
-  30,
-  'migrations 001 to 005 define exactly thirty functions in public'
+  36,
+  'migrations 001 to 006 define exactly thirty-six functions in public'
 );
 
 select * from finish();

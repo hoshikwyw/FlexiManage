@@ -124,7 +124,7 @@ Follow-ups from Phase 2 (scheduled in Phase 4 unless noted):
 Agents: supabase-engineer, frontend-dev, test-engineer, code-reviewer.
 
 - [x] Migration 004 (done 2026-11-03): `modules`, `field_definitions`, `records` (structured core + `custom_values jsonb`) with RLS, validation and audit (supabase-engineer). `attachments` moves to the storage migration below.
-- [x] (done 2026-11-04) Storage bucket `attachments` with path policy `{workspace_id}/{record_id}/{file}` (supabase-engineer). Migration 005: `attachments` table (insert-before-upload, generated `storage_path` `{workspace_id}/{record_id}/{attachment_id}-{file_name}`, cap 10 per record, 10 MB, MIME allow-list), private bucket, `storage.objects` policies via security definer helpers, `storage_deletion_queue` + Edge Function `purge-attachments` for cleanup (scheduling is Phase 5), `workspace_usage` gains `attachments` and `storage_bytes`; see `docs/architecture.md`, "Attachments".
+- [x] (done 2026-11-04) Storage bucket `attachments` with path policy `{workspace_id}/{record_id}/{file}` (supabase-engineer). Migration 005: `attachments` table (insert-before-upload, generated `storage_path` `{workspace_id}/{record_id}/{attachment_id}-{file_name}`, cap 10 per record, 10 MB, MIME allow-list), private bucket, `storage.objects` policies via security definer helpers, `storage_deletion_queue` + Edge Function `purge-attachments` for cleanup (scheduled every 10 minutes with pg_cron since migration 006), `workspace_usage` gains `attachments` and `storage_bytes`; see `docs/architecture.md`, "Attachments".
 - [x] (done 2026-11-03) Full-text and trigram search on records scoped by workspace (supabase-engineer).
 - [x] (done 2026-11-04) Field-type registry: text, number, date, select, checkbox, currency (frontend-dev). `src/features/records/fields/` with `buildRecordSchema` for Part 12.
 - [x] (done 2026-11-04) Module settings page: define fields, order, required flag (frontend-dev). Modules list, create dialog, module page (Records placeholder + Fields tab), settings page with danger zone.
@@ -135,6 +135,7 @@ Agents: supabase-engineer, frontend-dev, test-engineer, code-reviewer.
 - [x] (done 2026-11-04, frontend part) Module templates (added 2026-11-03, Epic B6): templates shipped as code under `src/features/modules/lib/templates.ts` ("Blank", "Housekeeping tasks" = D1 default, "Clients"); "start from a template" on an empty modules list and in "New module". Open for supabase-engineer: the create is sequential (module insert, then field inserts, best-effort delete on failure), not one transaction; a `create_module_with_fields` SQL function or Edge Function can replace `applyTemplate`'s writer without touching the UI.
 - [ ] Unit tests for field registry and Zod schema generation; component tests for form and table (test-engineer).
 - [x] (done 2026-11-04) Playwright primary journey (test-engineer). `tests/e2e`: `journey`, `isolation`, `auth`, `validation` and `smoke` specs (33 tests) against the dev server on `localhost:5173` and the local stack, unique per-run data with cleanup and a seed check in the global teardown, CI job `e2e` on pull requests into and pushes to `main`; see `docs/operations.md`, "End-to-end tests". Not yet run on GitHub Actions.
+- [x] (done 2026-11-04, Part 17a) Phase 3 code and security review findings fixed (supabase-engineer): migration 006 `20261105090000_006_phase3_review_fixes.sql` (storage reconciliation for signed uploads, no client select/delete on the bucket, `attachment-url` downloads, `update_record` with `PT409 record_changed`, `record.deleted`, C4 search document, number/blank/nested validation, no client ids, pg_cron purge and sweep), streaming `export-records`, reworked `purge-attachments`; tests `21_phase3_fixes.sql`; see `docs/architecture.md`, "Phase 3 review fixes". Frontend and e2e follow-ups by frontend-dev and test-engineer.
 - [ ] Code review of each feature before merge (code-reviewer).
 
 Exit criteria: the chosen workflow from D1 can be completed end to end with real data from a prospect.
@@ -143,7 +144,7 @@ Exit criteria: the chosen workflow from D1 can be completed end to end with real
 
 Agents: supabase-engineer, frontend-dev, test-engineer.
 
-- [ ] Migration 006 (renumbered 2026-11-04: 005 is attachments): `plans`, `subscriptions`, `entitlements`, `usage_counters` seeded with Free, Pro, Business (supabase-engineer).
+- [ ] Migration 007 (renumbered 2026-11-04: 005 is attachments, 006 the Phase 3 review fixes): `plans`, `subscriptions`, `entitlements`, `usage_counters` seeded with Free, Pro, Business (supabase-engineer).
 - [ ] Postgres function `check_entitlement(workspace_id, resource)` called from insert triggers on members, modules, records, attachments (supabase-engineer).
 - [ ] Usage page showing counters against limits with over-limit state, no auto-deletion on downgrade (frontend-dev).
 - [ ] Admin-only and owner-only UI gating matching server rules (frontend-dev).
@@ -262,7 +263,7 @@ the segment only changes the template seeded in B6. Conventions that apply to ev
 - **Plan limits.** Phase 4 meters `modules` (per workspace), `records` (per workspace across all
   modules), `storage_bytes` and `attachments` (per workspace) and `members`. Phase 3 does not enforce
   them, but every creation in this epic goes through exactly one insert path (a table insert, one
-  SQL function or one Edge Function) so `check_entitlement` can be attached in migration 006 without
+  SQL function or one Edge Function) so `check_entitlement` can be attached in migration 007 without
   changing the UI. Field definitions and select options are not metered by plan; they get fixed
   caps (hypothesis: 50 fields per module, 30 options per select field) enforced in the database.
   Every quota figure in this epic is a hypothesis until Phase 6.

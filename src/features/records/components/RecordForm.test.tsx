@@ -201,6 +201,22 @@ describe('RecordForm', () => {
     expect(await screen.findByText(/not allowed to change records/)).toBeInTheDocument()
   })
 
+  it('without a reload handler a PT409 conflict is a form-level message', async () => {
+    const user = userEvent.setup()
+    const onSubmit: SubmitMock = vi
+      .fn()
+      .mockRejectedValue({ code: 'PT409', message: 'record_changed', details: null, hint: null })
+    renderForm({
+      onSubmit,
+      fields: [],
+      defaultValues: { title: 'Acme', status: '', custom_values: {} },
+      mode: 'edit',
+    })
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    expect(await screen.findByText(/changed by someone else/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reload' })).not.toBeInTheDocument()
+  })
+
   it('asks before discarding unsaved changes and cancels directly when pristine', async () => {
     const user = userEvent.setup()
     const { onCancel } = renderForm()

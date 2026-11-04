@@ -6,6 +6,7 @@ import { FIELD_TYPES } from '@/types/database'
 import {
   FIELD_TYPE_DEFINITIONS,
   FIELD_TYPE_REGISTRY,
+  NUMBER_OUT_OF_RANGE_MESSAGE,
   REQUIRED_MESSAGE,
   TEXT_MAX_LENGTH,
   formatFieldValue,
@@ -106,6 +107,39 @@ describe('number and currency schemas', () => {
     )
     expect(jpy.safeParse(100).success).toBe(true)
     expect(jpy.safeParse(100.5).success).toBe(false)
+  })
+
+  it.each(['number', 'currency'] as const)(
+    '%s rejects abs(x) >= 1e15 and more than 6 fractional digits like the server',
+    (type) => {
+      // No precision cap of the field's own, so only the server limits apply.
+      const schema = FIELD_TYPE_REGISTRY[type].zodSchema(
+        createTestField({ type, settings: { precision: 6 } }),
+      )
+      expect(schema.safeParse(999_999_999_999_999).success).toBe(true)
+      expect(schema.safeParse(-999_999_999_999_999).success).toBe(true)
+      expect(schema.safeParse(0.123456).success).toBe(true)
+      expect(messagesOf(schema.safeParse(1e15))).toEqual([NUMBER_OUT_OF_RANGE_MESSAGE])
+      expect(messagesOf(schema.safeParse(-1e15))).toEqual([NUMBER_OUT_OF_RANGE_MESSAGE])
+      expect(messagesOf(schema.safeParse(1e20))).toEqual([NUMBER_OUT_OF_RANGE_MESSAGE])
+      expect(messagesOf(schema.safeParse(0.1234567))).toEqual([NUMBER_OUT_OF_RANGE_MESSAGE])
+      expect(messagesOf(schema.safeParse(1e-7))).toEqual([NUMBER_OUT_OF_RANGE_MESSAGE])
+    },
+  )
+
+  it('applies the range check to a number field without precision too', () => {
+    const schema = FIELD_TYPE_REGISTRY.number.zodSchema(createTestField({ type: 'number' }))
+    expect(messagesOf(schema.safeParse(0.1234567))).toEqual(['Number out of range'])
+    expect(schema.safeParse(12500.5).success).toBe(true)
+  })
+})
+
+describe('emptyValue', () => {
+  it('is "" for text and null for every other type (never an invented false)', () => {
+    expect(FIELD_TYPE_REGISTRY.text.emptyValue).toBe('')
+    for (const type of ['number', 'currency', 'date', 'select', 'checkbox'] as const) {
+      expect(FIELD_TYPE_REGISTRY[type].emptyValue).toBeNull()
+    }
   })
 })
 

@@ -155,10 +155,7 @@ describe('AttachmentsSection', () => {
     expect(deleteAttachment).not.toHaveBeenCalled()
     await user.click(within(dialog).getByRole('button', { name: 'Delete file' }))
     await waitFor(() => expect(deleteAttachment).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(deleteAttachment).mock.calls[0]).toEqual([
-      'ws',
-      expect.objectContaining({ id: 'att-2', storage_path: 'ws/rec/att-2-contract.pdf' }),
-    ])
+    expect(vi.mocked(deleteAttachment).mock.calls[0]).toEqual(['ws', { id: 'att-2' }])
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
   })
 

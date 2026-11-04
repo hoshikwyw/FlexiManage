@@ -1,43 +1,39 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { supabase } from '@/lib/supabase'
-
-import type { RecordPayload } from '../lib/record-values'
+import type { RecordPatch } from '../lib/record-values'
 import type { RecordItem } from '../types'
 import { recordKeys } from './keys'
-import { RECORD_COLUMNS } from './record-queries'
+import { updateRecordRpc } from './update-record-rpc'
 
 export interface UpdateRecordVariables {
   recordId: string
-  /** Only the changed columns (`diffRecordPayload`); never ids or timestamps. */
-  changes: Partial<RecordPayload>
+  /** `updated_at` of the snapshot taken when the edit form opened. */
+  expectedUpdatedAt: string
+  /** Only the changed fields (`buildRecordPatch`); never ids or timestamps. */
+  patch: RecordPatch
 }
 
 /**
- * Updates title, status and/or custom_values and nothing else. `.single()`
- * turns a zero-row update (record deleted meanwhile) into `PGRST116`.
- * Refreshes the detail cache and invalidates the module's lists.
+ * Saves an edit through `update_record` with optimistic concurrency: the
+ * server refuses with `PT409` when the record changed after
+ * `expectedUpdatedAt`, so one person's save never silently overwrites
+ * another's. Refreshes the detail cache with the returned row and invalidates
+ * the module's lists.
  */
 export function useUpdateRecord(workspaceId: string, moduleId: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ recordId, changes }: UpdateRecordVariables): Promise<RecordItem> => {
-      const update: Partial<RecordPayload> = {}
-      if (changes.title !== undefined) update.title = changes.title
-      if (changes.status !== undefined) update.status = changes.status
-      if (changes.custom_values !== undefined) update.custom_values = changes.custom_values
-      const { data, error } = await supabase
-        .from('records')
-        .update(update)
-        .eq('workspace_id', workspaceId)
-        .eq('module_id', moduleId)
-        .eq('id', recordId)
-        .select(RECORD_COLUMNS)
-        .single()
-      if (error) throw error
-      return data
-    },
+    mutationFn: ({
+      recordId,
+      expectedUpdatedAt,
+      patch,
+    }: UpdateRecordVariables): Promise<RecordItem> =>
+      updateRecordRpc({
+        p_record_id: recordId,
+        p_expected_updated_at: expectedUpdatedAt,
+        p_patch: patch,
+      }),
     onSuccess: (record) => {
       queryClient.setQueryData(recordKeys.detail(workspaceId, moduleId, record.id), record)
       void queryClient.invalidateQueries({ queryKey: recordKeys.lists(workspaceId, moduleId) })

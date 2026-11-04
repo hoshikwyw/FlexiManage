@@ -15,8 +15,8 @@ export interface UploadBatchResult {
  * Uploads files one after another (`uploadAttachment`: validate, insert row,
  * upload, roll back on failure) and keeps a per-file progress list for the UI.
  * supabase-js `upload` reports no byte progress, so a file is `queued`, then
- * `uploading` (indeterminate), then leaves the list once it is uploaded (the
- * refreshed attachments list shows it), or stays as `error` with a message
+ * `uploading` (indeterminate), then `done` until the batch ends and the
+ * refreshed attachments list shows it, or stays as `error` with a message
  * until dismissed or the next batch starts. The progress list is local UI
  * state; the attachments themselves are server state in TanStack Query.
  */
@@ -26,10 +26,9 @@ export function useUploadAttachment(workspaceId: string, recordId: string) {
   const [isUploading, setIsUploading] = useState(false)
   const nextId = useRef(0)
 
-  const { mutateAsync } = useMutation({
-    mutationFn: uploadAttachment,
-    onSuccess: () => invalidateAttachments(queryClient, workspaceId, recordId),
-  })
+  // No invalidation per file: the batch would wait for a list refetch between
+  // uploads. The list and usage are invalidated once when the batch ends.
+  const { mutateAsync } = useMutation({ mutationFn: uploadAttachment })
 
   const patch = useCallback((id: string, changes: Partial<UploadProgress>) => {
     setUploads((current) =>
@@ -48,7 +47,10 @@ export function useUploadAttachment(workspaceId: string, recordId: string) {
           status: 'queued',
         }
       })
-      setUploads((current) => [...current.filter((item) => item.status !== 'error'), ...items])
+      setUploads((current) => [
+        ...current.filter((item) => item.status !== 'error' && item.status !== 'done'),
+        ...items,
+      ])
       setIsUploading(true)
 
       let count = existingCount
@@ -62,17 +64,26 @@ export function useUploadAttachment(workspaceId: string, recordId: string) {
             await mutateAsync({ workspaceId, recordId, file, existingCount: count })
             count += 1
             uploaded += 1
-            setUploads((current) => current.filter((entry) => entry.id !== item.id))
+            patch(item.id, { status: 'done' })
           } catch (error) {
             patch(item.id, { status: 'error', error: getAttachmentErrorMessage(error) })
           }
         }
       } finally {
         setIsUploading(false)
+        // One refresh for the whole batch (also after failures: a failed rollback can leave
+        // a row the list should show). Finished files leave the progress list once the
+        // refreshed attachments list has them.
+        const done = new Set(items.map((item) => item.id))
+        void invalidateAttachments(queryClient, workspaceId, recordId).finally(() =>
+          setUploads((current) =>
+            current.filter((entry) => !(entry.status === 'done' && done.has(entry.id))),
+          ),
+        )
       }
       return { uploaded, failed: files.length - uploaded }
     },
-    [mutateAsync, patch, recordId, workspaceId],
+    [mutateAsync, patch, queryClient, recordId, workspaceId],
   )
 
   const dismiss = useCallback((id: string) => {

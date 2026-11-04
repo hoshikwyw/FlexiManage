@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
+import { recordKeys } from '@/features/records/api/keys'
 import { workspaceKeys } from '@/features/workspaces/api/keys'
 
 import {
@@ -21,8 +22,8 @@ export interface CreateModuleVariables extends NewModuleInput {
  * Creates a module (position = current count) and, for a template, its fields
  * in order through `applyTemplate`. The `on_module_created` trigger writes the
  * audit row; Phase 4 adds `check_entitlement` in front of the insert without
- * changing this hook. Invalidates the list, `['usage', workspaceId]` and the
- * audit feed.
+ * changing this hook. Invalidates the list, `['usage', workspaceId]`, the
+ * per-module record counts and the audit feed.
  */
 export function useCreateModule(workspaceId: string) {
   const queryClient = useQueryClient()
@@ -38,6 +39,7 @@ export function useCreateModule(workspaceId: string) {
       queryClient.setQueryData(moduleKeys.fields(workspaceId, module.id), fields)
       void queryClient.invalidateQueries({ queryKey: moduleKeys.list(workspaceId) })
       void queryClient.invalidateQueries({ queryKey: moduleKeys.usage(workspaceId) })
+      void queryClient.invalidateQueries({ queryKey: recordKeys.counts(workspaceId) })
       void queryClient.invalidateQueries({ queryKey: workspaceKeys.auditAll(workspaceId) })
     },
   })

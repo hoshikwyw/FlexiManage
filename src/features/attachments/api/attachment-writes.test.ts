@@ -1,11 +1,11 @@
 import { StorageApiError, StorageUnknownError } from '@supabase/storage-js'
+import { FunctionsFetchError, FunctionsHttpError } from '@supabase/supabase-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { supabase } from '@/lib/supabase'
 import { createQueryBuilderMock, type QueryBuilderMock } from '@/test/query-builder-mock'
 import { createStorageBucketMock, type StorageBucketMock } from '@/test/supabase-mock'
 
-import { AttachmentError } from '../lib/storage-errors'
 import type { AttachmentRow } from '../types'
 import { deleteAttachment, downloadAttachment, uploadAttachment } from './attachment-writes'
 
@@ -66,15 +66,12 @@ beforeEach(() => {
     log.push('storage.upload')
     return { data: { path: ROW.storage_path }, error: null }
   })
-  bucket.remove.mockImplementation(async () => {
-    log.push('storage.remove')
-    return { data: [{ name: ROW.storage_path }], error: null }
-  })
   vi.mocked(supabase.storage.from).mockReturnValue(bucket as never)
 })
 
 afterEach(() => {
   vi.mocked(supabase.from).mockReset()
+  vi.mocked(supabase.storage.from).mockClear()
 })
 
 describe('uploadAttachment', () => {
@@ -191,74 +188,93 @@ describe('uploadAttachment', () => {
 })
 
 describe('deleteAttachment', () => {
-  it('removes the storage object first, then the row, scoped by workspace', async () => {
+  it('deletes only the row, scoped by workspace, and never touches Storage', async () => {
     queueTables({ data: [{ id: ROW.id }], error: null })
-    await deleteAttachment(WS, ROW)
-    expect(log).toEqual(['storage.remove', 'attachments.delete'])
-    expect(bucket.remove).toHaveBeenCalledWith([ROW.storage_path])
+    await deleteAttachment(WS, { id: ROW.id })
+    expect(log).toEqual(['attachments.delete'])
     expect(builders[0]?.callsOf('eq')).toEqual([
       ['workspace_id', WS],
       ['id', ROW.id],
     ])
     expect(builders[0]?.callsOf('select')).toEqual([['id']])
-  })
-
-  it('throws forbidden when the row delete affects zero rows', async () => {
-    bucket.remove.mockImplementation(async () => {
-      log.push('storage.remove')
-      return { data: [], error: null }
-    })
-    queueTables({ data: [], error: null })
-    await expect(deleteAttachment(WS, ROW)).rejects.toBeInstanceOf(AttachmentError)
-    expect(log).toEqual(['storage.remove', 'attachments.delete'])
+    expect(supabase.storage.from).not.toHaveBeenCalled()
   })
 
   it('reports forbidden for a zero-row delete with the uploader/owner/admin message', async () => {
     queueTables({ data: [], error: null })
     await expect(deleteAttachment(WS, ROW)).rejects.toMatchObject({
+      name: 'AttachmentError',
       code: 'forbidden',
       message: expect.stringMatching(/uploader or an owner or admin/),
     })
   })
 
-  it('stops before the row delete when Storage fails', async () => {
-    queueTables()
-    bucket.remove.mockResolvedValue({ data: null, error: new StorageApiError('x', 400, '403') })
+  it('maps a row error', async () => {
+    queueTables({ data: null, error: { code: '42501', message: 'denied', details: null } })
     await expect(deleteAttachment(WS, ROW)).rejects.toMatchObject({ code: 'forbidden' })
-    expect(supabase.from).not.toHaveBeenCalled()
   })
 })
 
+function httpError(status: number, body: unknown) {
+  return new FunctionsHttpError(
+    new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }),
+  )
+}
+
 describe('downloadAttachment', () => {
-  it('creates a 60-second signed URL with the original name and clicks a download anchor', async () => {
-    bucket.createSignedUrl.mockResolvedValue({
-      data: { signedUrl: 'http://127.0.0.1:54321/storage/v1/object/sign/x?token=t' },
-      error: null,
-    })
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+  const invoke = vi.mocked(supabase.functions.invoke)
+  let clicks: { href: string; download: string }[]
+
+  beforeEach(() => {
+    clicks = []
+    invoke.mockReset()
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
       this: HTMLAnchorElement,
     ) {
-      log.push(`click ${this.download} ${this.href}`)
+      clicks.push({ href: this.href, download: this.download })
     })
-    await downloadAttachment(ROW)
-    expect(bucket.createSignedUrl).toHaveBeenCalledWith(ROW.storage_path, 60, {
-      download: 'Resume.pdf',
-    })
-    expect(log).toEqual([
-      'click Resume.pdf http://127.0.0.1:54321/storage/v1/object/sign/x?token=t',
-    ])
-    expect(document.querySelectorAll('a')).toHaveLength(0)
-    click.mockRestore()
   })
 
-  it('maps a not-found answer and starts no download', async () => {
-    bucket.createSignedUrl.mockResolvedValue({
+  afterEach(() => vi.restoreAllMocks())
+
+  it('asks attachment-url for a link and clicks a temporary anchor to it', async () => {
+    const url = 'http://127.0.0.1:54321/storage/v1/object/sign/x?token=t'
+    invoke.mockResolvedValue({
+      data: { data: { url, expiresAt: '2026-11-04T10:01:00.000Z' } },
+      error: null,
+    } as never)
+    const result = await downloadAttachment(ROW)
+    expect(invoke).toHaveBeenCalledWith('attachment-url', { body: { attachmentId: ROW.id } })
+    expect(result).toEqual({ url, expiresAt: '2026-11-04T10:01:00.000Z' })
+    expect(clicks).toEqual([{ href: url, download: 'Resume.pdf' }])
+    expect(document.querySelectorAll('a')).toHaveLength(0)
+    expect(supabase.storage.from).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [401, { error: { code: 'unauthorized', message: 'x' } }, 'unauthorized'],
+    [400, { error: { code: 'validation_error', message: 'x' } }, 'unknown'],
+    [404, { error: { code: 'not_found', message: 'x' } }, 'not_found'],
+    [500, { error: { code: 'internal', message: 'x' } }, 'unknown'],
+    [401, 'Invalid JWT', 'unauthorized'],
+    [404, 'not json', 'not_found'],
+  ])('maps HTTP %i %j to %s and starts no download', async (status, body, code) => {
+    invoke.mockResolvedValue({ data: null, error: httpError(status, body) } as never)
+    await expect(downloadAttachment(ROW)).rejects.toMatchObject({ name: 'AttachmentError', code })
+    expect(clicks).toEqual([])
+  })
+
+  it('maps a failed fetch to network', async () => {
+    invoke.mockResolvedValue({
       data: null,
-      error: new StorageApiError('Object not found', 400, '404'),
-    })
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click')
-    await expect(downloadAttachment(ROW)).rejects.toMatchObject({ code: 'not_found' })
-    expect(click).not.toHaveBeenCalled()
-    click.mockRestore()
+      error: new FunctionsFetchError(new TypeError('Failed to fetch')),
+    } as never)
+    await expect(downloadAttachment(ROW)).rejects.toMatchObject({ code: 'network' })
+  })
+
+  it('treats a body without a url as an unknown error', async () => {
+    invoke.mockResolvedValue({ data: { data: {} }, error: null } as never)
+    await expect(downloadAttachment(ROW)).rejects.toMatchObject({ code: 'unknown' })
+    expect(clicks).toEqual([])
   })
 })

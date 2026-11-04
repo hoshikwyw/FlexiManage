@@ -20,7 +20,7 @@ interface DeleteAttachmentDialogProps {
   workspaceId: string
   recordId: string
   /** The file to delete; null keeps the dialog closed. */
-  attachment: Pick<AttachmentRow, 'id' | 'storage_path' | 'file_name'> | null
+  attachment: Pick<AttachmentRow, 'id' | 'file_name'> | null
   onClose: () => void
 }
 
@@ -36,7 +36,7 @@ export function DeleteAttachmentDialog({
   async function handleDelete() {
     if (!attachment) return
     try {
-      await deleteAttachment.mutateAsync(attachment)
+      await deleteAttachment.mutateAsync({ id: attachment.id })
       toast.success(`"${attachment.file_name}" deleted`)
       deleteAttachment.reset()
       onClose()

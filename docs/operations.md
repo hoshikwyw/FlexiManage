@@ -1,8 +1,8 @@
 # Operations
 
 Runtime and tooling notes for operators. Updated by the `devops-engineer` and `supabase-engineer`
-agents. Last updated: 2026-11-04 (migration 005: attachments bucket, deletion queue and purge
-procedure, test files `19` and `20`, `export-records` and `purge-attachments`).
+agents. Last updated: 2026-11-04 (migration 006: scheduled maintenance with pg_cron, pg_net and
+Vault, the new purge result shape, `attachment-url`, test file `21`, `purge-drain-check.sh`).
 
 ## Production prerequisites
 
@@ -107,14 +107,21 @@ never collects it. `npm run db:reset` returns to the seed.
 
 Conventions (2026-11-03, Part 8b):
 
-- Files are numbered (`01_rls_enabled.sql` ... `20_storage_policies.sql`; 20 files, 850 tests as
-  of migration 005) and each wraps everything in `begin; select plan(N); ... select * from
+- Files are numbered (`01_rls_enabled.sql` ... `21_phase3_fixes.sql`; 21 files, 973 tests as
+  of migration 006) and each wraps everything in `begin; select plan(N); ... select * from
   finish(); rollback;`, so a run leaves no data behind. `01` holds the structural totals (table
   count, function count, grants, policy names) and must be updated by every migration; `13` to
   `18` cover the content model (isolation of modules, fields and records, custom value
   validation, role rules and audit, search and `workspace_usage`); `19` and `20` cover
   attachments (table isolation, checks, cap, audit, deletion queue, usage) and the `attachments`
-  bucket's `storage.objects` policies.
+  bucket's `storage.objects` policy; `21` covers migration 006 (no client ids, the C4 search
+  queries, `update_record`, `record.deleted`, number/blank/nested validation, size caps, file
+  names, storage reconciliation, `uploaded_at`, the sweep, the cron helpers).
+- Migration 006 removed `id` from the insert grants of `modules`, `field_definitions` and
+  `records`. The include grants `insert (id)` on those three tables back to `authenticated`
+  **inside the test transaction only** (rolled back with it) so the fixture helpers can keep
+  inserting fixed ids while impersonating; `01` does not include the helpers and `21` revokes
+  the grant first, so both assert the real grants.
 - The shared helpers live in `supabase/tests/helpers/tests_schema.sql.inc` and are pulled in with
   `\ir helpers/tests_schema.sql.inc` right after `select plan(N)` (psql resolves `\ir` relative to
   the including file, also inside the pg_prove container; the `.sql.inc` extension keeps pg_prove
@@ -169,14 +176,18 @@ Conventions (2026-11-03, Part 8b):
 
 `npm run functions:serve` needs the stack running. It starts the Docker edge runtime (Deno 2; no
 Deno install on the host is needed) and serves `invite-member`, `accept-invitation`,
-`export-records` and `purge-attachments`, reloading on every file change. Stop it with Ctrl+C; the stack keeps running.
+`export-records`, `purge-attachments` and `attachment-url`, reloading on every file change. Stop
+it with Ctrl+C; the stack keeps running (the CLI leaves the `supabase_edge_runtime_fleximanage`
+container behind when it is killed; `docker stop supabase_edge_runtime_fleximanage`).
 
 - Environment: the CLI injects `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
   `SUPABASE_SERVICE_ROLE_KEY` (plus the newer `SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_SECRET_KEY`)
   for the local stack; the hosted platform does the same in production. They are never written
   to a file. Function-specific variables live in `supabase/functions/.env` (git-ignored); copy
-  `supabase/functions/.env.example`, which currently holds only `ALLOWED_ORIGIN`. In production
-  set it with `supabase secrets set ALLOWED_ORIGIN=https://app.example.com`.
+  `supabase/functions/.env.example`, which holds `ALLOWED_ORIGIN` and the optional
+  `PUBLIC_SUPABASE_URL` (origin put into `attachment-url` download links; not needed locally or on
+  hosted projects). In production set them with
+  `supabase secrets set ALLOWED_ORIGIN=https://app.example.com`.
 - Imports: one shared `supabase/functions/deno.json` (import map) for all functions;
   `config.toml` points each `[functions.<name>]` at it. Add dependencies there, never per
   function. `import_map.json` is deprecated in CLI 2.x.
@@ -189,10 +200,11 @@ Deno install on the host is needed) and serves `invite-member`, `accept-invitati
   runtime is called directly (`http://supabase_edge_runtime_fleximanage:8081/<name>` from inside
   the Docker network). In production the function's headers apply; set `ALLOWED_ORIGIN`.
 - Tooling: `supabase/functions/**` is excluded from ESLint and from the Vite `tsconfig` (Deno
-  code with `npm:` specifiers); Prettier still formats it. Unit tests for the pure CSV helpers:
-  `deno test supabase/functions/_shared/csv.test.ts`; without a local Deno, through Docker:
-  `docker run --rm -v "$PWD/supabase/functions:/fns:ro" -w /fns denoland/deno:2.1.4 test --no-lock _shared/csv.test.ts`
-  (on Git Bash prefix `MSYS_NO_PATHCONV=1`). Type-check like CI:
+  code with `npm:` specifiers); Prettier still formats it. Unit tests for the pure CSV and
+  search helpers: `deno test supabase/functions/_shared/csv.test.ts supabase/functions/_shared/search.test.ts`;
+  without a local Deno, through Docker:
+  `docker run --rm -v "$PWD/supabase/functions:/fns:ro" -w /fns denoland/deno:2.1.4 test --no-lock _shared/csv.test.ts _shared/search.test.ts`
+  (on Git Bash prefix `MSYS_NO_PATHCONV=1`; 16 tests on 2026-11-04). Type-check like CI:
   `deno check --config supabase/functions/deno.json supabase/functions/*/index.ts`. Deploy with
   `supabase functions deploy <name>` once a hosted project exists (Phase 5).
 
@@ -327,33 +339,109 @@ policies in `docs/architecture.md`, "Attachments". Locally the bytes are under
 `docker exec supabase_storage_fleximanage rm -rf /mnt/stub/stub/attachments` when needed).
 
 Never delete from `storage.objects` in SQL: storage-api refuses it (`storage.protect_delete()`),
-and forcing it leaves the file in the backend. Deleted attachment rows (direct or by cascade from
-a record, module or workspace) are queued in `public.storage_deletion_queue` and removed by the
-Edge Function `purge-attachments`.
+and forcing it leaves the file in the backend. Deleted attachment rows (direct, by cascade from
+a record, module or workspace, by `sweep_stale_attachments()` or by a reconciliation rejection)
+and objects without a row are queued in `public.storage_deletion_queue` and removed by the Edge
+Function `purge-attachments`, which the pg_cron job `purge-attachments` calls every 10 minutes
+once its Vault secrets exist ("Scheduled maintenance" below). Since migration 006 clients have
+no select or delete access to the bucket: downloads go through `attachment-url`, removal through
+the row delete.
 
-Purge procedure (until the Phase 5 schedule exists; run after bulk deletes, and before a
-workspace's data is reported as erased):
+Manual purge (run after bulk deletes when the job is not configured, and before a workspace's
+data is reported as erased):
 
 ```sh
 # SERVICE from `npx supabase status -o env` (SERVICE_ROLE_KEY) locally, or from the secret store;
 # never echo it or put it in a file.
 curl -s -X POST "$API_URL/functions/v1/purge-attachments" \
   -H "apikey: $ANON" -H "Authorization: Bearer $SERVICE" -H "Content-Type: application/json" \
-  -d '{"limit":500}'                     # -> { "data": { "purged", "failed", "remaining" } }
+  -d '{"limit":500}'        # -> { "data": { "purged", "alreadyGone", "retryable", "dead" } }
 ```
 
-Repeat while `remaining > 0`. Entries that failed 10 times are no longer retried; inspect them as
-`postgres` with `select object_name, attempts, last_error from public.storage_deletion_queue where
-attempts >= 10`, fix the cause and reset `attempts` to 0. Planned schedule (Phase 5): every 10
-minutes, either pg_cron + pg_net (`net.http_post` with the key from Vault) or a GitHub Actions
-cron with the key from repository secrets.
+`purged`: objects removed by this call; `alreadyGone`: entries whose object no longer existed;
+`retryable`: entries still queued with fewer than 10 attempts; `dead`: entries with 10 failed
+attempts, no longer retried. Repeat while `retryable > 0` (it falls with every call: processed
+entries leave the queue, failing ones gain an attempt until they are `dead`). Inspect dead
+entries as `postgres` with `select object_name, attempts, last_error from
+public.storage_deletion_queue where attempts >= 10`, fix the cause and reset `attempts` to 0.
+Regression check (local, needs the functions served): `bash scripts/ci/purge-drain-check.sh`
+queues 300 entries with ~330-character names and asserts one call with `limit: 500` drains them.
 
-Manual HTTP check of an upload (alice, local stack): insert the row through PostgREST
-(`POST /rest/v1/attachments` with `Prefer: return=representation` and `select=id,storage_path`),
-then `POST /storage/v1/object/attachments/<storage_path, each segment URL-encoded>` with
-`Content-Type` equal to the row's `content_type` and exactly `size_bytes` bytes; download with
-`GET /storage/v1/object/authenticated/attachments/<path>`. Policy denials come back as HTTP 400
-with `statusCode` 403 or 404 in the JSON body.
+Pending rows: a row whose bytes never arrived keeps `uploaded_at` null, is not downloadable, does
+not count in `storage_bytes`, stops taking a cap slot after one hour and is deleted by
+`sweep_stale_attachments()` (pg_cron job `sweep-stale-attachments`, or
+`select public.sweep_stale_attachments();` as `postgres` / `service_role`).
+
+Manual HTTP check of an upload and a download (alice, local stack): insert the row through
+PostgREST (`POST /rest/v1/attachments` with `Prefer: return=representation` and
+`select=id,storage_path`), then `POST /storage/v1/object/attachments/<storage_path, each segment
+URL-encoded>` with `Content-Type` equal to the row's `content_type` and exactly `size_bytes`
+bytes (the row's `uploaded_at` is then set); download with
+`POST /functions/v1/attachment-url` `{"attachmentId": "<id>"}` and a `GET` of the returned `url`
+within 60 seconds. Policy denials come back as HTTP 400 with `statusCode` 403 or 404 in the JSON
+body. A signed upload URL whose bytes do not match the row ends with the row deleted and an
+`attachment.rejected` audit row (`docs/architecture.md`, "Storage policies").
+
+## Scheduled maintenance
+
+Migration 006 installs `pg_cron` and `pg_net` (both available in the local image and on hosted
+Supabase) and creates the jobs through `public.schedule_storage_maintenance()`:
+
+| Job | Schedule (UTC) | Runs | Needs |
+| --- | -------------- | ---- | ----- |
+| `sweep-stale-attachments` | every 10 minutes at :05, :15, ... | `public.sweep_stale_attachments()` | nothing |
+| `purge-attachments` | every 10 minutes at :00, :10, ... | `public.invoke_purge_attachments()`: `net.http_post` to the function with `{"limit": 500}` | Vault secrets `purge_attachments_service_key` and `purge_attachments_url` |
+
+The service-role key lives only in Supabase Vault (encrypted at rest); it is never in a
+migration, a job definition, a log line or this document. `invoke_purge_attachments()` reads it
+at run time. Without the secrets the purge job is simply not created (`db reset` therefore
+always starts without it).
+
+Local setup (after every `npm run db:reset`; the key is read into a shell variable and passed to
+psql as a variable, never echoed):
+
+```sh
+SERVICE=$(npx supabase status -o env | sed -nE 's/^SERVICE_ROLE_KEY="?([^"]*)"?$/\1/p')
+printf '%s\n' \
+  "select vault.create_secret(:'key', 'purge_attachments_service_key');" \
+  "select vault.create_secret('http://kong:8000/functions/v1/purge-attachments', 'purge_attachments_url');" \
+  "select public.schedule_storage_maintenance();" |
+  docker exec -i supabase_db_fleximanage psql -U postgres -d postgres -v key="$SERVICE" -At
+unset SERVICE
+```
+
+`http://kong:8000` is the API gateway as seen from the database container. The function must be
+served (`npm run functions:serve` or the runtime started by `supabase start`).
+
+Production and staging (Phase 5; once per project, as `postgres` in the SQL editor or with
+`psql` against the project, pasting the key from the dashboard, API settings, into the statement
+only in that session):
+
+```sql
+select vault.create_secret('<service-role or sb_secret key>', 'purge_attachments_service_key',
+                           'Bearer for purge-attachments (pg_cron)');
+select vault.create_secret('https://<project-ref>.supabase.co/functions/v1/purge-attachments',
+                           'purge_attachments_url');
+select public.schedule_storage_maintenance();
+```
+
+Rotate with `select vault.update_secret((select id from vault.secrets where name =
+'purge_attachments_service_key'), '<new key>');` (no reschedule needed). With an `sb_secret_...`
+key, `purge-attachments` must have `verify_jwt = false` (it checks the key itself).
+
+Checks (as `postgres`): `select jobname, schedule, command, active from cron.job;`,
+`select jobid, status, return_message, start_time from cron.job_run_details order by start_time
+desc limit 10;` and, for the HTTP result of the purge call, `select id, status_code, content,
+error_msg from net._http_response order by id desc limit 5;` (pg_net keeps responses for six
+hours). Verified locally on 2026-11-04: `200 {"data":{"purged":0,"alreadyGone":1,"retryable":0,
+"dead":0}}`.
+
+Fallback if a project cannot use pg_cron: a GitHub Actions workflow with
+`on: schedule: - cron: '*/10 * * * *'` and one step
+`curl -fsS -X POST "$PURGE_URL" -H "Authorization: Bearer $PURGE_KEY" -H "apikey: $PURGE_KEY" -H 'content-type: application/json' -d '{"limit":500}'`
+with `PURGE_URL` and `PURGE_KEY` from repository secrets (never echoed), plus a second step that
+runs `select public.sweep_stale_attachments()` through `psql` with the database URL secret. Not
+needed today (pg_cron is available everywhere we deploy).
 
 ## CI
 
@@ -372,9 +460,12 @@ is enabled and concurrency cancels superseded runs on the same ref.
   `scripts/ci/functions-smoke.sh`, which reads the API URL and anon key from
   `supabase status -o env` (never printed), signs in as `alice@example.com` with the password
   grant and asserts status codes only: no credentials 401, invite into a foreign workspace 403,
-  unknown invitation token 404, `export-records` into a foreign workspace 403, and
+  unknown invitation token 404, `export-records` into a foreign workspace 403,
   `export-records` of the seed module Clients 200 with `text/csv` (each run writes one
-  `records.exported` audit row in Workspace A). If the edge runtime is not answering it starts
+  `records.exported` audit row in Workspace A), and `attachment-url` for a random id 404 (added
+  2026-11-04). `scripts/ci/purge-drain-check.sh` (purge regression, needs the service-role key
+  from `supabase status` and `docker exec` into the database container) exists but is not yet
+  wired into the workflow (devops-engineer). If the edge runtime is not answering it starts
   `supabase functions serve` itself and stops it afterwards. Run it locally with
   `bash scripts/ci/functions-smoke.sh` (needs curl, and jq or node).
 

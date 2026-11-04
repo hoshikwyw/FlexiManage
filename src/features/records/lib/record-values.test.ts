@@ -16,7 +16,7 @@ import {
   getRecordErrorMessage,
   mapRecordSaveError,
 } from './record-errors'
-import { compactCustomValues, diffRecordPayload } from './record-values'
+import { compactCustomValues } from './record-values'
 
 describe('record values', () => {
   it('compactCustomValues drops null, undefined and empty strings but keeps false and 0', () => {
@@ -27,26 +27,21 @@ describe('record values', () => {
     })
   })
 
-  it('diffRecordPayload sends only changed columns and ignores key order and empty values', () => {
-    const current = {
-      title: 'Acme',
-      status: null,
-      custom_values: { value: 1, company: 'Acme', contact_email: null },
-    }
+  it('recordToFormValues keeps a never-set checkbox unset instead of false', () => {
+    const fields = [
+      createTestField({ key: 'company', label: 'Company' }),
+      createTestField({ key: 'vip', label: 'VIP', type: 'checkbox', position: 1 }),
+    ]
     expect(
-      diffRecordPayload(current, {
-        title: 'Acme',
-        status: null,
-        custom_values: { company: 'Acme', value: 1 },
-      }),
-    ).toEqual({})
+      recordToFormValues(
+        { title: 'Acme', status: null, custom_values: { company: 'Acme' } },
+        fields,
+      ).custom_values,
+    ).toEqual({ company: 'Acme', vip: null })
     expect(
-      diffRecordPayload(current, {
-        title: 'Acme 2',
-        status: 'vip',
-        custom_values: { company: 'Acme', value: 2 },
-      }),
-    ).toEqual({ title: 'Acme 2', status: 'vip', custom_values: { company: 'Acme', value: 2 } })
+      recordToFormValues({ title: 'A', status: null, custom_values: { vip: false } }, fields)
+        .custom_values,
+    ).toEqual({ company: '', vip: false })
   })
 
   it('recordToFormValues fills defaults, drops keys without a field and maps null status to ""', () => {
@@ -60,6 +55,21 @@ describe('record values', () => {
       custom_values: { company: 'Acme', contact_email: '', status: null, value: null },
     })
     expect(buildRecordFormSchema(createClientsFields()).safeParse(values).success).toBe(true)
+  })
+
+  it('rejects a whitespace-only title and required text client-side', () => {
+    const schema = buildRecordFormSchema(createClientsFields())
+    const result = schema.safeParse({
+      title: '   ',
+      status: '',
+      custom_values: { company: ' \t ', contact_email: '', status: null, value: null },
+    })
+    expect(result.success).toBe(false)
+    const issues = result.success ? [] : result.error.issues
+    expect(issues.map((issue) => [issue.path.join('.'), issue.message])).toEqual([
+      ['title', 'Enter a title'],
+      ['custom_values.company', 'This field is required'],
+    ])
   })
 
   it('toRecordPayload trims and turns an empty status into null', () => {

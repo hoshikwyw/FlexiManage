@@ -1,4 +1,5 @@
 import { triggerDownload } from '@/lib/download'
+import { readFunctionError } from '@/lib/function-errors'
 import { supabase } from '@/lib/supabase'
 import type { AttachmentInsert } from '@/types/database'
 
@@ -6,14 +7,12 @@ import { validateFile } from '../lib/attachment-rules'
 import {
   AttachmentError,
   DELETE_FORBIDDEN_MESSAGE,
+  mapAttachmentFunctionError,
   mapAttachmentRowError,
   mapStorageError,
 } from '../lib/storage-errors'
 import type { AttachmentRow } from '../types'
 import { ATTACHMENT_COLUMNS, ATTACHMENTS_BUCKET } from './attachment-queries'
-
-/** Lifetime of a download link, in seconds (B4 hypothesis: 60). */
-export const SIGNED_URL_TTL_SECONDS = 60
 
 export interface UploadAttachmentInput {
   workspaceId: string
@@ -93,40 +92,46 @@ async function rollbackRow(workspaceId: string, attachmentId: string): Promise<v
   }
 }
 
-/**
- * Downloads through a signed URL valid for 60 seconds. `{ download }` makes
- * Storage answer with `Content-Disposition: attachment; filename=<file_name>`,
- * so the browser saves the file under its original name and the app stays put.
- */
-export async function downloadAttachment(
-  attachment: Pick<AttachmentRow, 'storage_path' | 'file_name'>,
-): Promise<void> {
-  const { data, error } = await supabase.storage
-    .from(ATTACHMENTS_BUCKET)
-    .createSignedUrl(attachment.storage_path, SIGNED_URL_TTL_SECONDS, {
-      download: attachment.file_name,
-    })
-  if (error) throw mapStorageError(error)
-  triggerDownload(data.signedUrl, attachment.file_name)
+/** Answer of `attachment-url`: a short-lived download link and when it expires (ISO). */
+export interface AttachmentUrlResult {
+  url: string
+  expiresAt: string
 }
 
 /**
- * B4 delete order: the storage object first, then the row (the object is only
- * readable and removable while its row exists). `remove` answers `[]` without
- * an error when the policy hides the object or it was never uploaded, so the
- * row delete decides: zero rows back means forbidden or already gone. The row
- * delete also enqueues the path in `storage_deletion_queue` (a no-op for
- * `purge-attachments` when the object is already gone).
+ * Downloads through the `attachment-url` Edge Function, which checks
+ * membership, signs a short-lived URL that answers with
+ * `Content-Disposition: attachment` and returns `{ data: { url, expiresAt } }`.
+ * The browser never signs storage URLs itself; a temporary anchor to `url`
+ * starts the download without navigating the app.
+ */
+export async function downloadAttachment(
+  attachment: Pick<AttachmentRow, 'id' | 'file_name'>,
+): Promise<AttachmentUrlResult> {
+  const { data, error } = await supabase.functions.invoke<{ data?: AttachmentUrlResult }>(
+    'attachment-url',
+    { body: { attachmentId: attachment.id } },
+  )
+  if (error) throw mapAttachmentFunctionError(await readFunctionError(error))
+  const result = data?.data
+  if (!result || typeof result.url !== 'string' || result.url === '') {
+    throw new AttachmentError('unknown')
+  }
+  triggerDownload(result.url, attachment.file_name)
+  return result
+}
+
+/**
+ * Deletes the attachment row only. The `enqueue_attachment_object_deletion`
+ * trigger queues the storage object for `purge-attachments`; the client never
+ * removes objects. RLS filters a delete the caller may not make (not the
+ * uploader, not an owner or admin) or a row already gone to zero rows without
+ * an error, so the deleted id is selected and zero rows means forbidden.
  */
 export async function deleteAttachment(
   workspaceId: string,
-  attachment: Pick<AttachmentRow, 'id' | 'storage_path'>,
+  attachment: Pick<AttachmentRow, 'id'>,
 ): Promise<void> {
-  const { error: removeError } = await supabase.storage
-    .from(ATTACHMENTS_BUCKET)
-    .remove([attachment.storage_path])
-  if (removeError) throw mapStorageError(removeError)
-
   const { data, error } = await supabase
     .from('attachments')
     .delete()

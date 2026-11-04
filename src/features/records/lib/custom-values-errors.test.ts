@@ -63,6 +63,7 @@ describe('describeCustomValuesReason', () => {
     expect(describeCustomValuesReason('text longer than 2000 characters')).toBe(
       'Use at most 2,000 characters',
     )
+    expect(describeCustomValuesReason('number out of range')).toBe('Number out of range')
     expect(describeCustomValuesReason('something new')).toBe('something new')
   })
 })

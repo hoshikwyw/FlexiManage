@@ -1,3 +1,4 @@
+import type { FunctionFailure } from '@/lib/function-errors'
 import { NETWORK_ERROR_MESSAGE, isNetworkError, isPostgrestError } from '@/lib/postgrest-errors'
 
 import { describeAttachmentRuleError, type AttachmentRuleError } from './attachment-rules'
@@ -7,7 +8,13 @@ import { describeAttachmentRuleError, type AttachmentRuleError } from './attachm
  * components switch on `code`, never on Storage or PostgREST message text.
  */
 export type AttachmentErrorCode =
-  AttachmentRuleError | 'forbidden' | 'not_found' | 'already_exists' | 'network' | 'unknown'
+  | AttachmentRuleError
+  | 'forbidden'
+  | 'not_found'
+  | 'already_exists'
+  | 'unauthorized'
+  | 'network'
+  | 'unknown'
 
 export class AttachmentError extends Error {
   readonly code: AttachmentErrorCode
@@ -95,6 +102,36 @@ export function mapAttachmentRowError(error: unknown): AttachmentError {
   return new AttachmentError('unknown')
 }
 
+const FUNCTION_CODE_TO_CODE: Record<string, AttachmentErrorCode> = {
+  unauthorized: 'unauthorized',
+  not_found: 'not_found',
+  forbidden: 'forbidden',
+  validation_error: 'unknown',
+  internal: 'unknown',
+}
+
+const FUNCTION_STATUS_TO_CODE: Record<number, AttachmentErrorCode> = {
+  401: 'unauthorized',
+  403: 'forbidden',
+  404: 'not_found',
+}
+
+/**
+ * Maps a failed `attachment-url` call (`readFunctionError` output): the
+ * envelope's `error.code` (401 unauthorized, 400 validation_error, 404
+ * not_found, 500 internal), else the HTTP status, else network/unknown.
+ * `not_found` also covers an attachment of another workspace: the function
+ * does not reveal which.
+ */
+export function mapAttachmentFunctionError(failure: FunctionFailure): AttachmentError {
+  if (failure.network) return new AttachmentError('network')
+  const code =
+    (failure.code !== null ? FUNCTION_CODE_TO_CODE[failure.code] : undefined) ??
+    (failure.status !== null ? FUNCTION_STATUS_TO_CODE[failure.status] : undefined) ??
+    'unknown'
+  return new AttachmentError(code)
+}
+
 /** User-facing text for an attachment error code. */
 export function describeAttachmentError(code: AttachmentErrorCode): string {
   switch (code) {
@@ -109,6 +146,8 @@ export function describeAttachmentError(code: AttachmentErrorCode): string {
       return 'This file or record no longer exists.'
     case 'already_exists':
       return 'A file with this name was already uploaded. Refresh the page and try again.'
+    case 'unauthorized':
+      return 'Your session has expired. Sign in again and retry.'
     case 'network':
       return NETWORK_ERROR_MESSAGE
     case 'unknown':

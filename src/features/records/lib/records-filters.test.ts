@@ -10,6 +10,7 @@ import {
   applySort,
   buildPrefixTsQuery,
   escapeLike,
+  tokenizeSearch,
 } from './records-filters'
 
 type Builder = QueryBuilderMock & RecordsQueryBuilder<Builder>
@@ -35,6 +36,36 @@ describe('buildPrefixTsQuery', () => {
     expect(buildPrefixTsQuery('Café Müller 42')).toBe('café:* & müller:* & 42:*')
     expect(buildPrefixTsQuery('東京 株式会社')).toBe('東京:* & 株式会社:*')
     expect(buildPrefixTsQuery('acme ACME')).toBe('acme:*')
+  })
+
+  // The contract cases shared with the export-records tokenizer.
+  it.each([
+    ['12500.5', '12500.5:*'],
+    ['jane@acme.example', 'jane@acme.example:*'],
+    ['example.com', 'example.com:*'],
+    ['-5', '5:*'],
+    ['café', 'café:*'],
+    ['a.b.', 'a.b:*'],
+    ['...', null],
+    ['"quoted"', 'quoted:*'],
+    ['ACME acme', 'acme:*'],
+  ])('tokenizes %j as %j', (input, expected) => {
+    expect(buildPrefixTsQuery(input)).toBe(expected)
+  })
+
+  it('keeps . @ - _ + inside tokens and strips them at the edges', () => {
+    expect(tokenizeSearch('ops@acme.example, +44-20 _x_ snake_case')).toEqual([
+      'ops@acme.example',
+      '44-20',
+      'x',
+      'snake_case',
+    ])
+    expect(tokenizeSearch('--- @@ ++ __')).toEqual([])
+    expect(tokenizeSearch('a+b (c*d)')).toEqual(['a+b', 'c', 'd'])
+  })
+
+  it('NFC-normalises so composed and decomposed accents give the same token', () => {
+    expect(tokenizeSearch('café café')).toEqual(['café'])
   })
 
   it('returns null for empty input or input without word characters', () => {
@@ -66,6 +97,13 @@ describe('applySearch', () => {
   it('falls back to an escaped title ilike without word characters', () => {
     const b = applySearch(builder(), ' %_ ')
     expect(b.calls).toEqual([['ilike', 'title', '%\\%\\_%']])
+    expect(applySearch(builder(), '...').calls).toEqual([['ilike', 'title', '%...%']])
+  })
+
+  it('searches an email as one prefix token', () => {
+    expect(applySearch(builder(), 'jane@acme.example').calls).toEqual([
+      ['textSearch', 'search_vector', 'jane@acme.example:*', { config: 'simple' }],
+    ])
   })
 
   it('does nothing for an empty term', () => {

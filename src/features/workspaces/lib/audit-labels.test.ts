@@ -59,6 +59,31 @@ describe('describeAuditAction', () => {
       { module_id: 'm', key: 'vendor', type: 'text' },
       'deleted the field "vendor"',
     ],
+    [
+      'record.deleted',
+      { module_id: 'm', title: 'Acme Ltd', attachment_count: 3 },
+      'deleted the record "Acme Ltd" (3 attachments)',
+    ],
+    [
+      'record.deleted',
+      { module_id: 'm', title: 'Room 12', attachment_count: 1 },
+      'deleted the record "Room 12" (1 attachment)',
+    ],
+    [
+      'record.deleted',
+      { module_id: 'm', title: 'Draft', attachment_count: 0 },
+      'deleted the record "Draft" (0 attachments)',
+    ],
+    ['record.deleted', { module_id: 'm' }, 'deleted the record "Untitled"'],
+    ['attachment.added', { file_name: 'plan.pdf' }, 'attached the file "plan.pdf"'],
+    ['attachment.removed', { file_name: 'plan.pdf' }, 'removed the file "plan.pdf"'],
+    [
+      'attachment.rejected',
+      { file_name: 'x.zip', reason: 'size_mismatch' },
+      'had the upload "x.zip" rejected',
+    ],
+    ['records.exported', { module_id: 'm', filtered: true }, 'exported filtered records to CSV'],
+    ['records.exported', { module_id: 'm', filtered: false }, 'exported records to CSV'],
   ])('labels %s', (action, metadata, expected) => {
     expect(describeAuditAction(event({ action, metadata, entity_id: 'x' }))).toBe(expected)
   })
@@ -94,7 +119,9 @@ describe('describeAuditAction', () => {
   })
 
   it('falls back to the raw action for unknown events', () => {
-    expect(describeAuditAction(event({ action: 'records.exported' }))).toBe('records.exported')
+    expect(describeAuditAction(event({ action: 'billing.unknown_event' }))).toBe(
+      'billing.unknown_event',
+    )
   })
 })
 

@@ -8,13 +8,13 @@
 --     are not updatable; created_at/updated_at are never supplied; created_by
 --     must be the caller
 --   * audit: module.created, module.updated (name/slug only), module.deleted,
---     field.created, field.deleted; nothing for records
+--     field.created, field.deleted; for records only record.deleted (006)
 -- Fixtures (as postgres): carol admin of A, dave member of A; module
 -- tests.mod_a with one field and one record created by alice.
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(61);
+select plan(62);
 \ir helpers/tests_schema.sql.inc
 
 create function tests.mod_a2() returns uuid language sql immutable
@@ -122,8 +122,10 @@ select throws_ok(
 
 select tests.logout();
 select is((select count(*)::int from public.records where id = tests.rec_a1()), 0, 'postgres: dave''s delete removed alice''s record');
-select is((select count(*)::int from public.audit_events where workspace_id = tests.ws_a() and entity_type = 'record'), 0,
-  'postgres: record writes produce no audit events');
+select is((select count(*)::int from public.audit_events where workspace_id = tests.ws_a() and entity_type = 'record' and action <> 'record.deleted'), 0,
+  'postgres: record inserts and updates produce no audit events');
+select is((select count(*)::int from public.audit_events where action = 'record.deleted' and entity_id = tests.rec_a1()::text and actor_id = tests.dave()), 1,
+  'postgres: dave''s record delete is audited as record.deleted (migration 006)');
 
 -- ---------------------------------------------------------------------------
 -- carol (admin): module and field writes with audit

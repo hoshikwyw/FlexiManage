@@ -115,6 +115,28 @@ describe('CreateModuleDialog', () => {
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
   })
 
+  it('puts a duplicate slug (23505) on the slug input, not in a form-level message', async () => {
+    const user = userEvent.setup()
+    const onOpenChange = vi.fn()
+    mutateAsync.mockRejectedValue({
+      code: '23505',
+      message: 'duplicate key value violates unique constraint "modules_workspace_id_slug_key"',
+      details: 'Key (workspace_id, slug)=(ws, clients) already exists.',
+      hint: null,
+    })
+    renderDialog({ onOpenChange })
+
+    await user.type(await screen.findByLabelText('Module name'), 'Clients')
+    await user.click(screen.getByRole('button', { name: 'Create module' }))
+
+    expect(
+      await screen.findByText('A module with this slug already exists in this workspace.'),
+    ).toBeInTheDocument()
+    const slug = screen.getByLabelText('Slug')
+    expect(slug).toHaveAttribute('aria-invalid', 'true')
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
+
   it('shows validation errors and does not submit without a name', async () => {
     const user = userEvent.setup()
     renderDialog()

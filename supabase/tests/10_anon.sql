@@ -32,17 +32,17 @@ select throws_ok(
   '42501', 'permission denied for table storage_deletion_queue',
   'anon: delete on storage_deletion_queue is denied');
 select throws_ok(
-  $$select public.can_read_attachment_object('x')$$,
-  '42501', 'permission denied for function can_read_attachment_object',
-  'anon: cannot execute can_read_attachment_object');
+  $$select public.update_record(gen_random_uuid(), now(), '{}')$$,
+  '42501', 'permission denied for function update_record',
+  'anon: cannot execute update_record (migration 006)');
 select throws_ok(
   $$select public.can_upload_attachment_object('x', null)$$,
   '42501', 'permission denied for function can_upload_attachment_object',
   'anon: cannot execute can_upload_attachment_object');
 select throws_ok(
-  $$select public.can_delete_attachment_object('x')$$,
-  '42501', 'permission denied for function can_delete_attachment_object',
-  'anon: cannot execute can_delete_attachment_object');
+  $$select public.sweep_stale_attachments()$$,
+  '42501', 'permission denied for function sweep_stale_attachments',
+  'anon: cannot execute sweep_stale_attachments (migration 006)');
 select throws_ok(
   $$select * from public.workspace_usage('00000000-0000-0000-0000-0000000000aa')$$,
   '42501', 'permission denied for function workspace_usage',

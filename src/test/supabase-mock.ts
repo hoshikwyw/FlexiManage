@@ -34,8 +34,6 @@ export function createSupabaseMock() {
 export function createStorageBucketMock() {
   return {
     upload: vi.fn().mockResolvedValue({ data: { path: '' }, error: null }),
-    remove: vi.fn().mockResolvedValue({ data: [], error: null }),
-    createSignedUrl: vi.fn().mockResolvedValue({ data: { signedUrl: '' }, error: null }),
   }
 }
 

@@ -11,7 +11,7 @@ import { FieldGroup } from '@/components/ui/field'
 import { slugify } from '@/features/workspaces/lib/slug'
 
 import { useCreateModule } from '../api/use-create-module'
-import { getModuleErrorMessage } from '../lib/module-errors'
+import { getModuleFormErrorMessage } from '../lib/module-errors'
 import { uniqueModuleName } from '../lib/module-names'
 import {
   BLANK_TEMPLATE_ID,
@@ -20,6 +20,7 @@ import {
   type ModuleTemplate,
 } from '../lib/templates'
 import { createModuleSchema, type CreateModuleInput } from '../schemas/module'
+import { setModuleFieldError } from './set-module-field-error'
 import { TemplatePicker } from './TemplatePicker'
 
 interface CreateModuleFormProps {
@@ -97,8 +98,9 @@ export function CreateModuleForm({
         templateId: values.templateId,
       })
       onCreated(result)
-    } catch {
-      // Rendered from `createModule.error`.
+    } catch (error) {
+      // A duplicate slug or name goes on its input; the rest renders from `createModule.error`.
+      setModuleFieldError(form.setError, error)
     }
   })
 
@@ -142,9 +144,7 @@ export function CreateModuleForm({
           maxLength={500}
         />
       </FieldGroup>
-      <FormServerError
-        message={createModule.error ? getModuleErrorMessage(createModule.error) : null}
-      />
+      <FormServerError message={getModuleFormErrorMessage(createModule.error)} />
       <div className="flex justify-end gap-2">
         {onCancel ? (
           <Button type="button" variant="outline" onClick={onCancel}>

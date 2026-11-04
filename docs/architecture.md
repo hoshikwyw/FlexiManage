@@ -2,9 +2,9 @@
 
 Database and backend reference. Maintained by the `supabase-engineer` agent; every new table,
 function or policy is documented here in the same change that introduces it.
-Last updated: 2026-11-04 (migration 005, attachments and the `attachments` bucket, Edge Functions
-`export-records` and `purge-attachments`: see
-[Attachments](#attachments-migration-20261104090000_005_attachmentssql)).
+Last updated: 2026-11-04 (migration 006, Phase 3 review fixes: download function `attachment-url`,
+`update_record`, `record.deleted`, the C4 search tokenizer, storage reconciliation and the
+maintenance schedule: see [Phase 3 review fixes](#phase-3-review-fixes-migration-20261105090000_006_phase3_review_fixessql)).
 
 ## Tenancy model
 
@@ -47,7 +47,7 @@ Role capabilities (migrations 001 and 003):
 | Create, edit, delete field definitions       |  yes  |  yes  |   no   |
 | Create, edit, delete records (any author)    |  yes  |  yes  |  yes   |
 | Call `workspace_usage(workspace_id)`         |  yes  |  yes  |  yes   |
-| Read and download attachments (005)          |  yes  |  yes  |  yes   |
+| Read and download attachments (005; download through `attachment-url` since 006) |  yes  |  yes  |  yes   |
 | Add an attachment (upload)                   |  yes  |  yes  |  yes   |
 | Delete own attachment                        |  yes  |  yes  |  yes   |
 | Delete another member's attachment           |  yes  |  yes  |   no   |
@@ -55,7 +55,8 @@ Role capabilities (migrations 001 and 003):
 
 Records are writable by every member, including records created by someone else. This is the MVP
 rule (migration 004): a small team shares one data set, and per-record ownership or a read-only
-role is a Phase 4 decision together with record-level audit.
+role is a Phase 4 decision. Record deletes are audited since migration 006 (`record.deleted`);
+record creates and edits are not.
 
 ## Tables (migration `20261030120000_001_tenancy.sql`, amended by 003)
 
@@ -204,14 +205,17 @@ Actions and metadata (migrations 001 to 005 and the Edge Functions):
 | `field.created`       | `audit_field_change()` (004)                 | `field_definition` / field id     | `{ module_id, key, type, label }`           |
 | `field.deleted`       | `audit_field_change()` (004)                 | `field_definition` / field id     | `{ module_id, key, type, label }`           |
 | `attachment.added`    | `audit_attachment_change()` (005)            | `attachment` / attachment id      | `{ record_id, file_name, size_bytes }`      |
-| `attachment.removed`  | `audit_attachment_change()` (005), direct deletes only | `attachment` / attachment id | `{ record_id, file_name, size_bytes }` |
+| `attachment.removed`  | `audit_attachment_change()` (005), direct deletes and `sweep_stale_attachments()` (actor null) | `attachment` / attachment id | `{ record_id, file_name, size_bytes }` |
+| `attachment.rejected` | `reconcile_attachment_object()` (006): a stored object did not match its row, or would be an 11th uploaded file | `attachment` / attachment id | `{ record_id, file_name, size_bytes, object_size_bytes, object_content_type, reason }`; `reason` is `size_mismatch`, `content_type_mismatch` or `too_many_files`; actor = the row's uploader |
+| `record.deleted`      | `audit_record_delete()` (006), not for module or workspace cascades | `record` / record id | `{ module_id, title, attachment_count }` |
 | `records.exported`    | `export-records` Edge Function (`writeAudit`) | `module` / module id            | `{ module_id, row_count, filtered }`        |
 
 Module changes to `position`, `description` or `icon` and field updates (label, required,
 position, options, settings, type) are not audited. Fields removed by a module delete are not
-audited one by one: the single `module.deleted` row stands for them. **Record writes produce no
-audit events** (volume: every edit of every row); whether to log record create/delete, and for
-which plans, is a Phase 4 decision.
+audited one by one: the single `module.deleted` row stands for them; likewise records removed by
+a module delete get no `record.deleted`. **Record creates and edits produce no audit events**
+(volume: every edit of every row); record deletes do since migration 006. A rejected upload
+writes `attachment.rejected` instead of `attachment.removed`.
 
 Invitation metadata never contains the invitee's email (privacy: the audit log is readable by
 every member) nor the token. Accepting an invitation produces two rows: `member.added` from the
@@ -233,9 +237,19 @@ as a parameter; it always comes from `auth.uid()`.
 | `current_user_workspace_ids()`                       | setof uuid   | All workspace ids the caller belongs to.                         |
 | `shares_workspace_with(p_user_id uuid)`              | boolean      | Caller and `p_user_id` share at least one workspace (profiles).  |
 | `workspace_usage(p_workspace_id uuid)` (004, recreated in 005) | one row `(modules int, records int, members int, attachments int, storage_bytes bigint)` | Counts for the usage page and the Phase 4 entitlement check; see [workspace_usage](#workspace_usagep_workspace_id-uuid). |
-| `can_read_attachment_object(p_name text)` (005)     | boolean      | `storage.objects` select policy: an `attachments` row with `storage_path = name` exists and the caller is a member of its workspace. |
-| `can_upload_attachment_object(p_name text, p_metadata jsonb)` (005) | boolean | `storage.objects` insert policy: matching row uploaded by the caller (still a member), no object yet, metadata size and MIME type equal the row's. |
-| `can_delete_attachment_object(p_name text)` (005)   | boolean      | `storage.objects` delete policy: matching row exists and the caller is its uploader (and a member) or an owner/admin. |
+| `can_upload_attachment_object(p_name text, p_metadata jsonb)` (005, replaced in 006) | boolean | `storage.objects` insert policy: metadata present; a pending (`uploaded_at` null, < 1 hour old) row uploaded by the caller (still a member); metadata `mimetype` equals `content_type` and `size` (when present) equals `size_bytes`; no object yet. |
+
+`can_read_attachment_object` and `can_delete_attachment_object` (005) were dropped in migration
+006 together with the storage select and delete policies.
+
+Callable functions added in migration 006:
+
+| Function | Security | Callable by | Purpose |
+| -------- | -------- | ----------- | ------- |
+| `update_record(p_record_id uuid, p_expected_updated_at timestamptz, p_patch jsonb)` returns `records` | invoker (RLS applies) | `authenticated` | Contract C3: optimistic-concurrency record update; see [update_record](#update_record-contract-c3). |
+| `sweep_stale_attachments()` returns integer | definer | `service_role`, pg_cron | Deletes attachments rows still pending one hour after insert. |
+| `invoke_purge_attachments()` returns bigint | definer | postgres (pg_cron) only | POSTs `{"limit": 500}` to `purge-attachments` through pg_net with the key from Vault. |
+| `schedule_storage_maintenance()` returns text | definer | postgres only | Creates the pg_cron jobs (idempotent); see [Schedule](#schedule-pg_cron--pg_net--vault). |
 
 Pure helpers (migration 004) are `immutable`, not security definer, and keep the default
 `execute` for every role: they are called from check constraints and a generated column, which
@@ -248,6 +262,8 @@ Postgres evaluates with the privileges of the role that writes the row (also `se
 | `field_settings_are_valid(field_type, jsonb)`              | `field_definitions_settings_check`: object; `currency.currency` is `^[A-Z]{3}$`; `number`/`currency.precision` is an integer 0..6. Unknown keys pass. |
 | `attachment_content_type_is_allowed(text)` (005)          | `attachments_content_type_check`: the eleven allowed MIME types (same list as the bucket). |
 | `attachment_file_name_is_valid(text)` (005)               | `attachments_file_name_check`: 1..255 chars, trimmed, Storage-safe key characters only. |
+| `text_is_blank(text)` (006)                               | Null, `''` or only whitespace (the set JavaScript `trim()` removes: ASCII whitespace, NBSP, U+1680, U+2000-200A, U+2028/2029, U+202F, U+205F, U+3000, U+FEFF). `records_title_not_blank_check`, required fields, the field guards. |
+| `record_search_document(text, text, jsonb)` (006)         | `records.search_vector`: tsvector of title, status and custom values indexed whole, split at `@` and split into alphanumeric parts (C4). |
 
 ### `accept_invitation(p_token text)` (migration `20261030150000_002_accept_invitation.sql`)
 
@@ -289,6 +305,13 @@ Trigger functions (not executable by any API role):
 | `enforce_attachment_cap()` (005) | before insert on `attachments` (`attachments_enforce_cap`) | At most 10 per record; per-record advisory lock; 23514 `attachments: at most 10 files per record`. Security definer. |
 | `audit_attachment_change()` (005) | after insert/delete on `attachments` (`attachments_audit`) | `attachment.added` / `attachment.removed` (not for cascades). Security definer. |
 | `enqueue_attachment_object_deletion()` (005) | after delete on `attachments` (`attachments_enqueue_object_deletion`) | Inserts the object into `storage_deletion_queue`, also for cascades. Security definer. |
+| `audit_record_delete()` (006)    | before delete on `records` (`records_audit_delete`) | `record.deleted { module_id, title, attachment_count }`; skipped when the module or workspace is gone (cascade). Security definer. |
+| `reconcile_attachment_object()` (006) | after insert or update of `metadata` on `storage.objects` when `bucket_id = 'attachments'` (`attachments_reconcile_object`) | Compares the stored size and MIME type with the row: match stamps `uploaded_at`; mismatch or an 11th uploaded file deletes the row and writes `attachment.rejected`; an object without a row is queued. Security definer. |
+
+Migration 006 replaced `validate_record_custom_values()`, `protect_field_definition()`,
+`handle_field_deleted()`, `enforce_attachment_cap()` and `audit_attachment_change()` (`create or
+replace`; behaviour in the sections below and in
+[Phase 3 review fixes](#phase-3-review-fixes-migration-20261105090000_006_phase3_review_fixessql)).
 
 ### Account deletion
 
@@ -329,12 +352,12 @@ and no table grant, so it is denied for `authenticated`. `o/a` means owner or ad
 | `workspace_members` | `is_workspace_member(workspace_id)`             | none (`handle_new_workspace()` and `accept_invitation()` only, since 003) | owner; col `role`; last-owner trigger   | self, or owner, or admin when target `role <> 'owner'`; last-owner trigger |
 | `invitations`       | o/a; cols all except `token`                    | o/a; `invited_by = auth.uid()`; `role = 'owner'` only if owner; cols `workspace_id, email, role, invited_by` | none (`accept_invitation()` only) | o/a                                                   |
 | `audit_events`      | `is_workspace_member(workspace_id)`             | none                                                           | none                                                | none                                                                   |
-| `modules` (004)     | `is_workspace_member(workspace_id)`             | o/a; `created_by = auth.uid()`; cols `id, workspace_id, name, slug, description, icon, position, created_by` | o/a; cols `name, slug, description, icon, position` | o/a                                       |
-| `field_definitions` (004) | `is_workspace_member(workspace_id)`       | o/a; cols `id, workspace_id, module_id, key, label, type, required, position, options, settings` | o/a; cols `key, label, type, required, position, options, settings` (triggers guard `key`/`type`) | o/a |
-| `records` (004)     | `is_workspace_member(workspace_id)`             | member; `created_by = auth.uid()`; cols `id, workspace_id, module_id, title, status, custom_values, created_by` | member; cols `title, status, custom_values` | member                              |
+| `modules` (004)     | `is_workspace_member(workspace_id)`             | o/a; `created_by = auth.uid()`; cols `workspace_id, name, slug, description, icon, position, created_by` (`id` removed in 006) | o/a; cols `name, slug, description, icon, position` | o/a                                       |
+| `field_definitions` (004) | `is_workspace_member(workspace_id)`       | o/a; cols `workspace_id, module_id, key, label, type, required, position, options, settings` (`id` removed in 006) | o/a; cols `key, label, type, required, position, options, settings` (triggers guard `key`/`type`) | o/a |
+| `records` (004)     | `is_workspace_member(workspace_id)`             | member; `created_by = auth.uid()`; cols `workspace_id, module_id, title, status, custom_values, created_by` (`id` removed in 006) | member; cols `title, status, custom_values`; or `update_record()` (006) | member                              |
 | `attachments` (005) | `is_workspace_member(workspace_id)`             | member; `uploaded_by = auth.uid()` (default, not insertable); cols `workspace_id, record_id, file_name, content_type, size_bytes` | none (immutable) | uploader (still a member), or o/a |
 | `storage_deletion_queue` (005) | none                                 | none                                                           | none                                                | none (service role only)                                            |
-| `storage.objects` in bucket `attachments` (005) | `can_read_attachment_object(name)` | `can_upload_attachment_object(name, metadata)` | none | `can_delete_attachment_object(name)` |
+| `storage.objects` in bucket `attachments` (005, 006) | none since 006 (downloads: `attachment-url`) | `can_upload_attachment_object(name, metadata)` | none | none since 006 (removal: row delete + queue) |
 
 For the three content tables insert and update are column-level grants, so `created_at`,
 `updated_at` and `search_vector` can never be supplied, and `workspace_id`, `module_id` and
@@ -361,9 +384,9 @@ records_select_member                      records_insert_member
 records_update_member                      records_delete_member
 attachments_select_member                  attachments_insert_member
 attachments_delete_uploader_or_owner_admin
--- on storage.objects (bucket attachments):
-attachments_objects_select_member          attachments_objects_insert_uploader
-attachments_objects_delete_uploader_or_owner_admin
+-- on storage.objects (bucket attachments); the select and delete policies of 005 were
+-- dropped in 006:
+attachments_objects_insert_uploader
 ```
 
 ## Review fixes (migration `20261102090000_003_review_fixes.sql`)
@@ -446,24 +469,28 @@ JSON shapes:
 | `id`            | uuid PK     |                                                                             |
 | `workspace_id`  | uuid        | not null, `references workspaces on delete cascade`                         |
 | `module_id`     | uuid        | not null, `references modules on delete cascade`; composite FK with `workspace_id` |
-| `title`         | text        | not null, 1..200                                                            |
+| `title`         | text        | not null, 1..200; `records_title_not_blank_check` (006): not only whitespace (`text_is_blank`) |
 | `status`        | text        | null or <= 50 chars; free text in the MVP (a module-level status list is a later decision) |
 | `custom_values` | jsonb       | not null, default `{}`; `{ "<field key>": value }`, validated by trigger    |
-| `search_vector` | tsvector    | generated always as `to_tsvector('simple', title || ' ' || status || ' ' || jsonb_values_text(custom_values))` stored; read-only |
+| `search_vector` | tsvector    | generated always as `record_search_document(title, status, custom_values)` stored (rebuilt in 006, see C4); read-only |
 | `created_by`    | uuid        | default `auth.uid()`, `references auth.users on delete set null`            |
 | `created_at`, `updated_at` | timestamptz |                                                                  |
 
 Indexes: `records_workspace_module_created_idx (workspace_id, module_id, created_at desc)` for
-listing, `records_search_vector_idx` (GIN) for full-text search, `records_custom_values_idx` (GIN
-`jsonb_path_ops`) for `custom_values @> '{"status": "active"}'` filters, `records_title_trgm_idx`
-(GIN `gin_trgm_ops`, extension `pg_trgm` in schema `extensions`) for `title ilike '%...%'`.
+the export order, `records_workspace_module_updated_idx (workspace_id, module_id, updated_at desc,
+id)` (006) for the list's default sort, `records_search_vector_idx` (GIN) for full-text search,
+`records_custom_values_idx` (GIN `jsonb_path_ops`) for `custom_values @> '{"status": "active"}'`
+filters. The title trigram index `records_title_trgm_idx` was dropped in migration 006: the
+`title ilike` fallback only runs for search input without a single token and is already narrowed
+to one module by the listing indexes (`pg_trgm` stays installed).
 
-Search contract: `search_vector @@ to_tsquery('simple', 'acme:*')` (prefix) or
-`plainto_tsquery('simple', 'yak inc')` (all words). The `simple` configuration does no stemming
-and no stop words, so it is language-neutral. Booleans, nested objects and arrays in
-`custom_values` are not indexed; numbers are indexed as their text (`4200`). Through PostgREST:
-`.textSearch('search_vector', 'acme:*', { config: 'simple' })` or `.ilike('title', '%acme%')`,
-always with `.eq('workspace_id', id)` (RLS enforces it anyway).
+Search contract (C4, migration 006): the client builds `tok:* & tok:*` with the C4 tokenizer and
+queries `search_vector @@ to_tsquery('simple', ...)`; see
+[Search (C4)](#search-tokenizer-and-document-contract-c4). The `simple` configuration does no
+stemming and no stop words, so it is language-neutral. Booleans are not indexed (objects and
+arrays cannot be stored since 006); numbers are indexed as their text (`4200`). Through
+PostgREST: `.textSearch('search_vector', 'acme:*', { config: 'simple' })` or, without tokens,
+`.ilike('title', '%...%')`, always with `.eq('workspace_id', id)` (RLS enforces it anyway).
 
 ### Custom value validation (`validate_record_custom_values()`)
 
@@ -475,11 +502,13 @@ the fields by `position`, each checking required before type):
 | Message                                                | When                                                                          |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------- |
 | `custom_values: expected object`                       | `custom_values` is not a JSON object                                          |
+| `custom_values.<key>: nested objects and arrays are not allowed` | (006) a value is a JSON object or array; checked before every other per-key rule |
 | `custom_values.<key>: unknown field`                   | key is not a field of the module (never silently dropped)                     |
-| `custom_values.<key>: required`                       | required field absent, `null` or `""`                                         |
+| `custom_values.<key>: required`                       | required field absent, `null`, `""` or (006) only whitespace (`text_is_blank`) |
 | `custom_values.<key>: expected string`                 | `text` or `select` value is not a JSON string                                 |
 | `custom_values.<key>: text longer than 2000 characters` | `text` value longer than 2000 chars                                          |
 | `custom_values.<key>: expected number`                 | `number` or `currency` value is not a JSON number                             |
+| `custom_values.<key>: number out of range`             | (006) `number` or `currency` with `abs(x) >= 1e15` or more than 6 fractional digits (trailing zeros ignored: `1.1234560` passes) |
 | `custom_values.<key>: expected date YYYY-MM-DD`        | `date` value is not a string matching `^\d{4}-\d{2}-\d{2}$` that casts to a date |
 | `custom_values.<key>: expected boolean`                | `checkbox` value is not a JSON boolean                                        |
 | `custom_values.<key>: not one of the options`          | `select` value is not one of `options[].value` (case-sensitive)              |
@@ -490,8 +519,13 @@ Clients map the message with the regex `^custom_values(?:\.([a-z0-9_]+))?: (.+)$
 key or none, group 2 = reason) and show it on the matching form field. The error also carries
 `column = 'custom_values'` in the PostgREST `details`.
 
-Nested invocations are skipped (`pg_trigger_depth() > 1`); the only nested caller is
-`handle_field_deleted()` below.
+Order since 006: object shape, nested values, unknown keys, then the fields. The trigger first
+takes `select 1 from modules where id = new.module_id for share`, so a record write and a
+concurrent field change on the same module serialise (the field triggers hold `for update`;
+verified with two sessions on 2026-11-04: the record insert waits for the field update). The key
+strip of `handle_field_deleted()` is skipped through the transaction-local flag
+`app.field_strip = 'on'` that the function sets around its update and resets to `off`; migration
+004's `pg_trigger_depth() > 1` skip is gone, so no other nested write bypasses validation.
 
 ### Field definition guards
 
@@ -515,8 +549,15 @@ record. Changing `type` to `select` needs `options` in the same statement (other
 `handle_field_deleted()` (after delete) runs `update records set custom_values = custom_values -
 <key>` for the module's records that hold the key, so records never carry a key without a
 definition and `custom_values.<key>: unknown field` is raised for later writes. The nested update
-skips validation (so a stale record does not block the delete) and moves the affected records'
-`updated_at`. During a module or workspace cascade the trigger does nothing.
+skips validation (flag `app.field_strip`, so a stale record does not block the delete) and moves
+the affected records' `updated_at`. During a module or workspace cascade the trigger does
+nothing.
+
+Since migration 006 both field triggers lock the module row `for update` first, and blank values
+(`''` or whitespace only) count as "no value": they neither freeze `type` nor keep an option "in
+use". `field_definitions` also has `field_definitions_settings_size_check`
+(`pg_column_size(settings) <= 2048`) and `field_definitions_options_size_check`
+(`pg_column_size(options) <= 32768`), both `23514`.
 
 ### `workspace_usage(p_workspace_id uuid)`
 
@@ -526,9 +567,10 @@ bigint)` for the workspace, counting every module, every record and every member
 of role, every `attachments` row, and the sum of their `size_bytes` (0 when there are none).
 Migration 005 recreated it (drop + create, because a new return type cannot be `create or
 replace`d); the argument list and the first three columns are unchanged, so existing callers keep
-working. `storage_bytes` counts declared sizes, which equal the stored sizes for every uploaded
-object (the upload policy requires it); a row whose upload never happened still counts until it is
-deleted. Frontend type contract: `WorkspaceUsageRow` in `src/types/database.ts` is the full
+working. `storage_bytes` counts declared sizes of **uploaded** rows only (`uploaded_at is not
+null`, migration 006); declared and stored sizes are equal for every uploaded row (the upload
+policy and `reconcile_attachment_object()` enforce it). `attachments` still counts every row,
+pending ones included. Frontend type contract: `WorkspaceUsageRow` in `src/types/database.ts` is the full
 row; since Part 14 (2026-11-04) `useWorkspaceUsage` returns it and the pinned
 `WorkspaceUsage` alias is gone. A caller who is not a member of the
 workspace (including an unknown id, so existence is not revealed, and a call without a JWT) gets
@@ -541,8 +583,8 @@ same numbers.
 
 ### Not decided yet (Phase 4)
 
-- Record-level audit (`record.created` / `record.deleted`) and per-record ownership or a read-only
-  role; today every member writes every record and nothing is logged.
+- Record-level audit beyond deletes (`record.created`, edits) and per-record ownership or a
+  read-only role; today every member writes every record and only deletes are logged (006).
 - A module-level status list for `records.status` (free text today).
 - Enforcing module and record limits before insert (`check_entitlement` with `workspace_usage`).
 
@@ -565,6 +607,11 @@ in the private Storage bucket `attachments`. Migration 005 also adds the unique 
 | `storage_path` | text        | not null, unique; **generated always** as `workspace_id || '/' || record_id || '/' || id || '-' || file_name` stored; a supplied value fails with `428C9` |
 | `uploaded_by`  | uuid        | default `auth.uid()`, `references auth.users on delete set null`; **not insertable** (always the caller) |
 | `created_at`   | timestamptz | default `now()`; not insertable                                              |
+| `uploaded_at`  | timestamptz | (006) null while pending; set by `reconcile_attachment_object()` when the matching object is stored; read-only for clients. Index `attachments_pending_created_idx (created_at) where uploaded_at is null` |
+
+Since migration 006 `file_name` also has `attachments_file_name_url_safe_check`
+(`file_name !~ '[?#%]'`): `?`, `#` and `%` broke object URLs (code review 2). The frontend
+sanitiser replaces them.
 
 Indexes: `attachments_record_created_idx (record_id, created_at)` for the record page,
 `attachments_workspace_id_idx`, the unique index on `storage_path`. No `updated_at`: an
@@ -579,7 +626,8 @@ Rules and errors (all `23514` unless noted):
 | constraint `attachments_file_name_check`            | name empty, > 255, padded, or with a character outside the set above |
 | constraint `attachments_content_type_check`         | MIME type outside the allow-list (also `text/plain; charset=utf-8`) |
 | constraint `attachments_size_bytes_check`           | size 0 or > 10 MB                                                 |
-| message `attachments: at most 10 files per record`  | 11th row on one record (`enforce_attachment_cap()`, per-record advisory lock so parallel inserts cannot both pass at 9) |
+| constraint `attachments_file_name_url_safe_check`   | (006) name contains `?`, `#` or `%`                               |
+| message `attachments: at most 10 files per record`  | 11th row on one record (`enforce_attachment_cap()`, per-record advisory lock so parallel inserts cannot both pass at 9). Since 006 the count is uploaded rows plus pending rows younger than one hour: a stale pending row does not block a slot |
 | `23503` `attachments_record_workspace_fkey`         | `record_id` is not a record of `workspace_id` (another workspace's record) |
 | `42501` new row violates row-level security          | `workspace_id` is not a workspace of the caller                    |
 | `42501` permission denied for table attachments      | the insert names `id`, `uploaded_by` or `created_at`; any update  |
@@ -587,7 +635,8 @@ Rules and errors (all `23514` unless noted):
 Audit: `attachment.added` (insert) and `attachment.removed` (direct delete) with metadata exactly
 `{ record_id, file_name, size_bytes }` and the caller as `actor_id`; no path, MIME type or
 content. Attachments removed by a record, module or workspace cascade are not logged per file
-(the record row is gone; record deletes are not audited in the MVP).
+(`record.deleted` carries `attachment_count` since 006). A reconciliation rejection writes
+`attachment.rejected` instead.
 
 Plan limits (Phase 4): the row insert is the single creation path, so `check_entitlement` for
 `attachments` and `storage_bytes` attaches to it as a before-insert trigger; downloads keep working
@@ -608,51 +657,74 @@ Created by the migration with `insert into storage.buckets ... on conflict (id) 
 
 ### Storage policies
 
-How Storage evaluates them (verified on CLI 2.122, storage-api 1.84.19): storage-api runs every
-object query as the caller's Postgres role (`authenticated`, `request.jwt.claims` set), so
-`auth.uid()` is the caller and RLS on `storage.objects` decides. Before writing any bytes it calls
-`storage.can_insert_object()`, which performs the insert (metadata still null) and rolls it back,
-so a refused upload never reaches the backend; after the upload it inserts the row with
-`metadata` (`size`, `mimetype`, ...) and RLS is checked again (an upload refused at that point
-leaves no file either; checked on the local file backend). Downloads, signed-URL creation and
-listing are selects; removal is `delete ... returning`, which needs the select policy as well.
-`owner` / `owner_id` are set to the uploader but are not used for authorization: the
-`attachments` row is the source of truth.
+How Storage evaluates them (verified on CLI 2.122, storage-api 1.84.19, re-checked 2026-11-04
+for migration 006 by logging every `storage.objects` insert): for a normal upload (multipart or
+TUS with the user's JWT) storage-api first runs a permission test as the caller (`authenticated`,
+`request.jwt.claims` set): it inserts the row with metadata `{ mimetype, contentLength }`
+(`contentLength` is the **request** size for multipart uploads, not the file size) and rolls it
+back. After the bytes are stored it runs the same test again with the backend metadata (`size`,
+`mimetype`, `eTag`, ...) and then inserts the real row **as its superuser role** (current user
+`postgres`, RLS bypassed). None of these inserts uses `RETURNING` and existing objects are looked up
+as the superuser, so uploads need no select policy (migration 006 removed it; supabase-js
+`upload` and TUS uploads verified). Downloads, signed-URL creation and listing are selects;
+removal is `delete ... returning`. `owner` / `owner_id` are set to the uploader but are not used
+for authorization: the `attachments` row is the source of truth.
 
-Three policies on `storage.objects`, each `bucket_id = 'attachments' and <helper>`, each calling one
-security definer helper (no inline membership subquery; the helpers use `is_workspace_member` /
-`has_workspace_role`):
+**Signed upload URLs bypass RLS.** `POST /object/upload/sign/<bucket>/<path>` runs the permission
+test once with metadata from the *sign request's* headers, and the later
+`PUT /object/upload/sign/...?token=` (and TUS `POST /upload/resumable/sign` with `x-signature`)
+writes the object entirely as the superuser. The insert policy therefore never sees the real
+size or type of such an upload (review finding H1: a 1-byte `text/plain` row received a 10 MiB
+zip). Migration 006 closes this with `reconcile_attachment_object()`, an after insert/update
+trigger on `storage.objects` that compares every stored object with its row, whoever wrote it.
+
+Policies on `storage.objects` since migration 006: exactly one, `bucket_id = 'attachments' and
+<helper>`, calling a security definer helper (no inline membership subquery):
 
 | Command | Policy                                              | Helper and rule                                                                 |
 | ------- | --------------------------------------------------- | ------------------------------------------------------------------------------- |
-| select  | `attachments_objects_select_member`                 | `can_read_attachment_object(name)`: a row with `storage_path = name` exists and the caller is a member of its workspace |
-| insert  | `attachments_objects_insert_uploader`               | `can_upload_attachment_object(name, metadata)`: the row exists, `uploaded_by = auth.uid()` and the caller is still a member, no object exists under the name yet, and when the metadata is known its `size` equals `size_bytes` and its `mimetype` (parameters such as `;charset=` ignored) equals `content_type` |
+| select  | none (006)                                          | nobody lists, downloads or signs directly; downloads go through `attachment-url` (C1) |
+| insert  | `attachments_objects_insert_uploader`               | `can_upload_attachment_object(name, metadata)`: metadata present with a `mimetype` (parameters such as `;charset=` ignored) equal to `content_type`; when `size` is present it equals `size_bytes`; the row is pending (`uploaded_at is null`) and younger than one hour, `uploaded_by = auth.uid()` and the caller is still a member; no object exists under the name yet |
 | update  | none                                                | objects are immutable: `x-upsert: true`, move and copy are refused              |
-| delete  | `attachments_objects_delete_uploader_or_owner_admin` | `can_delete_attachment_object(name)`: the row exists and the caller is its uploader (and a member) or an owner/admin |
+| delete  | none (006)                                          | removal is the row delete (C2): the queue trigger enqueues the object and `purge-attachments` removes it |
 
 Because `storage_path` is generated from `workspace_id`, `record_id` and `id`, the equality
 `storage_path = name` also proves that the first path segment is the row's workspace and the
 second its record, and the composite foreign key ties that record to the same workspace; no
 `storage.foldername(name)` parsing is needed. Deliberate differences from the B4 text: only the
-**uploader** may upload the bytes for a row (an owner cannot fill someone else's pending row),
-and an object whose row is already gone is neither readable nor deletable by clients (making
-orphans readable would let members download a file that was just removed; `purge-attachments`
-removes them).
+**uploader** may upload the bytes for a row (an owner cannot fill someone else's pending row), a
+row can be uploaded once (`uploaded_at`), and no client reads or removes objects directly.
 
-HTTP results against the local stack (2026-11-04). Storage answers policy denials with HTTP
-**400** and the logical status in the JSON body (`statusCode`); clients should switch on the body:
+Reconciliation (`attachments_reconcile_object`, every insert or metadata update in the bucket
+whose metadata carries `size`; the size-less permission tests are left to the policy):
 
-| Request                                                             | HTTP | body `statusCode` / `error`     |
+| Situation | Effect |
+| --------- | ------ |
+| row found, `size` = `size_bytes`, MIME type = `content_type`, fewer than 10 other uploaded rows on the record | `uploaded_at = now()` |
+| size differs / MIME type differs / record already has 10 uploaded files | row deleted (object queued by the delete trigger), `attachment.rejected` with `reason` `size_mismatch` / `content_type_mismatch` / `too_many_files`, actor = the row's uploader; no `attachment.removed` |
+| no row with `storage_path = name` (row deleted while the upload ran, or a superuser write) | object queued in `storage_deletion_queue` (workspace from the first path segment) |
+
+The rejected object stays in `storage.objects` until the next purge, unreachable for clients
+(no select policy, no row for `attachment-url`).
+
+HTTP results against the local stack (2026-11-04, migration 006). Storage answers policy denials
+with HTTP **400** (or 403 on the TUS endpoint) and the logical status in the JSON body
+(`statusCode`); clients should switch on the body:
+
+| Request                                                             | HTTP | body `statusCode` / result      |
 | ------------------------------------------------------------------- | ---: | ------------------------------- |
-| alice uploads to her row's `storage_path`                           |  200 |                                 |
-| alice downloads it (`/object/authenticated/...`), creates a signed URL |  200 |                              |
-| bob (workspace B) downloads it, or creates a signed URL for it      |  400 | `404` `not_found`               |
-| public URL of the object                                            |  400 |                                 |
+| alice uploads to her row's `storage_path` (supabase-js `upload`)    |  200 | `uploaded_at` set               |
+| alice: TUS upload with her JWT, matching file                       | 201 / 204 | `uploaded_at` set          |
+| alice: TUS upload with her JWT, 10 MiB for a 1-byte row             | 201 / 403 | nothing stored             |
+| alice: sign upload (`content-type: text/plain`) + `PUT` 10 MiB zip for a 1-byte `text/plain` row | 200 / 200 | object stored by the superuser, then reconciled: row deleted, `attachment.rejected` `size_mismatch`, object queued and purged |
+| same through TUS `/upload/resumable/sign` with `x-signature`         | 201 / 204 | reconciled the same way    |
+| alice `createSignedUrl`, `download`, `list` on the bucket           |  400 | `404` / `Object not found`; `list` returns `[]` |
+| alice `remove([own path])`                                          |  200 | `[]` (nothing removed)          |
 | alice uploads to a path without a row, or under B's prefix          |  400 | `403` `Unauthorized`            |
 | alice uploads again to the same path (`x-upsert: true` or not)      |  400 | `403` `Unauthorized`            |
 | upload whose size or MIME type differs from the row                 |  400 | `403` `Unauthorized`            |
 | upload with a MIME type outside the bucket list                     |  400 | `415` `invalid_mime_type`       |
-| bob removes alice's object                                          |  200 | `[]` (nothing removed)          |
+| public URL of the object                                            |  400 |                                 |
 
 ### Cleanup of storage objects (`storage_deletion_queue`, `purge-attachments`)
 
@@ -669,20 +741,161 @@ store (verified 2026-11-04 on the local file backend). Approach (a) is therefore
    they survive the workspace delete that produced them (the one documented exception to the
    "`workspace_id references workspaces`" rule; the table is system-owned, not tenant data).
 2. The Edge Function `purge-attachments` (service-role key only) removes queued objects through
-   the Storage API and deletes the queue rows; failures increment `attempts` (entries stop being
-   retried after 10) and keep `last_error`. Removing an object that is already gone is not an
-   error, so a client that removed the object first (B4 order) leaves a harmless queue entry.
-3. Schedule: none yet. Phase 5 calls it every 10 minutes (pg_cron + pg_net, or a GitHub
-   Actions cron with the service-role key from secrets); until then an operator runs it by hand
-   (`docs/operations.md`, "Attachments bucket").
+   the Storage API in chunks of 100 names and deletes the queue rows; a failed chunk increments
+   `attempts` (entries stop being retried after 10) and keeps `last_error` without stopping the
+   other chunks. Removing an object that is already gone is not an error (`alreadyGone`).
+   Migration 006 also queues objects from reconciliation (rejections, objects without a row).
+3. Schedule (migration 006): pg_cron job `purge-attachments` every 10 minutes, created only when
+   the Vault secrets exist; see [Schedule](#schedule-pg_cron--pg_net--vault).
 
 `storage_deletion_queue` columns: `id` bigint identity, `bucket_id`, `object_name`,
 `workspace_id`, `enqueued_at`, `attempts`, `last_error` (<= 500), `last_attempt_at`. RLS enabled,
 no policies, no grants for `anon` or `authenticated`; only `service_role` reads and writes it.
-Between the row delete and the purge an orphaned object is unreachable for clients (no row, so
-no select policy match). The reverse orphan, a row whose upload never happened, stays until
-someone deletes it (it shows as a broken download and counts toward `storage_bytes`); a
-scheduled sweep of rows without an object older than a day is a Phase 5 task.
+Between the row delete and the purge an orphaned object is unreachable for clients (no select
+policy at all since 006). The reverse orphan, a row whose upload never happened, stays pending
+(`uploaded_at` null: no download, not in `storage_bytes`, no cap slot after one hour) and is
+deleted by `sweep_stale_attachments()` one hour after its insert (pg_cron job
+`sweep-stale-attachments`).
+
+## Phase 3 review fixes (migration `20261105090000_006_phase3_review_fixes.sql`)
+
+Applied 2026-11-04 (Part 17a) after the Phase 3 code and security reviews. Migrations 004 and
+005 are untouched; every change is a new constraint, column, index, trigger, function, grant, or
+a `create or replace` / drop of a 004/005 object. Tests: `supabase/tests/21_phase3_fixes.sql`
+(plus updated `01`, `10`, `17`, `18`, `19`, `20`); HTTP checks listed under each contract.
+
+| # | Finding | Fix |
+| - | ------- | --- |
+| H1 | Signed upload URLs (and signed TUS) bypass the size/type check: the final write is the storage superuser | `reconcile_attachment_object()` trigger on `storage.objects`; policy requires metadata and mimetype |
+| H2 | `purge-attachments` stalled: the live-row `in()` filter overflowed the URL for long names and threw | live-row check removed (cannot match, see the function), chunked removes, per-chunk failure bookkeeping, result `{ purged, alreadyGone, retryable, dead }` |
+| M3 | Numbers of any magnitude and precision | `custom_values.<key>: number out of range` (`abs(x) >= 1e15` or > 6 decimals) |
+| L1 | CSV formula guard only looked at the first character | guard after leading (Unicode) whitespace and quote characters, fullwidth `＝ ＋ － ＠` |
+| L3 | Clients could choose primary keys of modules, fields, records | `id` removed from the insert grants |
+| L4 | Unbounded `settings` / `options` | `pg_column_size` checks 2048 / 32768 |
+| L5 | Pending rows (upload never happened) counted in `storage_bytes` and the cap forever | `uploaded_at`, usage and cap ignore stale pending rows, `sweep_stale_attachments()` |
+| L6 | Whitespace-only values passed `required` and the title | `text_is_blank()`; `records_title_not_blank_check` |
+| L7 | Deep JSON in `custom_values` | objects and arrays rejected first (`nested objects and arrays are not allowed`) |
+| CR2 | `?` `#` `%` in file names broke object URLs | `attachments_file_name_url_safe_check` |
+| CR5 | Record writes raced field changes; `pg_trigger_depth()` skip too broad; `''` counted as a value in the guards | module row `for share` / `for update`, `app.field_strip` flag, blank values ignored by the guards |
+| - | Downloads and deletes by any client against `storage.objects` | C1 `attachment-url`, C2 row-only delete; select/delete storage policies dropped |
+| - | Lost updates | C3 `update_record` |
+| - | Search missed parts of emails and decimals | C4 tokenizer + search document |
+| - | Record deletes were not audited | C5 `record.deleted` |
+| - | Default sort without an index | `records_workspace_module_updated_idx` |
+
+### Contract C1: `attachment-url` (download)
+
+`POST /functions/v1/attachment-url`, `verify_jwt = true`, body `{ attachmentId: uuid }`.
+
+- `200 { data: { url: string, expiresAt: string } }`: `url` is an absolute signed Storage URL
+  (`<public API origin>/storage/v1/object/sign/attachments/<path>?token=...&download=<file_name>`)
+  valid for 60 seconds; Storage answers it with `Content-Disposition: attachment;
+  filename=<file_name>`. `expiresAt` is ISO 8601 UTC, computed just before signing (never later
+  than the real expiry).
+- `401 unauthorized` (no or invalid JWT), `400 validation_error` (body), `404 not_found` with the
+  identical body `{ error: { code: "not_found", message: "Attachment not found" } }` when the row
+  does not exist, is not visible to the caller (other workspace), is still pending
+  (`uploaded_at` null) or its object is missing; `500 internal`.
+- The row is loaded with the caller's client (RLS proves membership); only the signing uses the
+  service role. Public origin: hosted projects inject the public `SUPABASE_URL`; the local CLI
+  runtime injects `http://kong:8000`, so there the origin Kong forwarded (`x-forwarded-host`) is
+  used; `PUBLIC_SUPABASE_URL` (function secret) overrides both.
+- Verified 2026-11-04: alice 200, `expiresAt` 60 s ahead, the URL downloads identical bytes with
+  `Content-Disposition: attachment`; bob 404; random id and pending row: the same 404 body;
+  direct `createSignedUrl` / `download` as alice fail (`Object not found`).
+
+### Contract C2: attachment delete and storage access
+
+The client deletes only the row: `from('attachments').delete().eq('id', id).select('id')`; zero
+rows means not allowed or already gone. `enqueue_attachment_object_deletion()` queues the object
+and `purge-attachments` removes it. Clients do not call `storage.remove` (it would remove nothing:
+there is no delete policy) and cannot select objects (no select policy), so no client can list,
+download or sign. Uploads are unchanged (insert row, then `storage.upload(storage_path, ...)`) and
+verified to work without a select policy, so no time-boxed select policy was needed.
+
+### `update_record` (contract C3)
+
+`public.update_record(p_record_id uuid, p_expected_updated_at timestamptz, p_patch jsonb)
+returns public.records`, security invoker (RLS applies), `set search_path = ''`, execute granted
+to `authenticated` only. Through PostgREST:
+`supabase.rpc('update_record', { p_record_id, p_expected_updated_at, p_patch })` (add
+`.select('...')` to choose columns; the default row includes `search_vector`).
+
+`p_patch` keys, all optional: `title` (string), `status` (string, or `null` to clear), `set`
+(object of custom values to set), `unset` (array of keys to remove). Statement:
+`update records set title = coalesce(p_patch->>'title', title), status = case when p_patch ?
+'status' then p_patch->>'status' else status end, custom_values = (custom_values - unset) || set
+where id = p_record_id and updated_at = p_expected_updated_at returning *`. `unset` is applied
+before `set` (a key in both ends up set). When the patch has neither `set` nor `unset`,
+`custom_values` is left out of the SET list, so the validation trigger does not run and a
+title/status edit of a stale record still succeeds (as with a direct title-only update).
+
+| SQLSTATE / HTTP | Message | When |
+| --------------- | ------- | ---- |
+| `PT409` / 409 | `record_changed` | zero rows updated and the record exists and is visible: someone changed it since `p_expected_updated_at` (hint: reload and apply again) |
+| `PT404` / 404 | `not_found` | zero rows and the record does not exist or is not visible (other workspace: same answer) |
+| `23514` / 400 | `custom_values.<key>: <reason>` or the title check | validation on the merged value, unchanged contract |
+| `22023` / 400 | `p_patch: expected object`, `p_patch.<key>: unknown key`, `p_patch.title: expected string`, `p_patch.status: expected string or null`, `p_patch.set: expected object`, `p_patch.unset: expected array of strings` | malformed patch |
+
+`p_expected_updated_at` must be the `updated_at` exactly as read (microsecond precision): send the
+string PostgREST returned, not a value round-tripped through a JavaScript `Date` (milliseconds
+only), or every call answers `record_changed`. Verified 2026-11-04 over PostgREST: two calls with
+the same expected timestamp give 200 then 409 `PT409 record_changed`; bob gets 404 `PT404`.
+
+### Search tokenizer and document (contract C4)
+
+Tokenizer (identical in `src/features/records/lib/records-filters.ts` and
+`supabase/functions/_shared/search.ts`, used by `export-records`): NFC-normalise; split on
+whitespace and on every character that is not a letter, mark, digit or one of `. @ - _ +`; strip
+leading and trailing `. @ - _ +` from each token; drop empty tokens; lowercase; dedupe; keep at
+most 8; each token becomes `token:*`; join with ` & `. No token: `title ilike %term%` (backslash,
+`%`, `_` escaped). The surviving characters have no tsquery meaning, so input cannot form
+operators.
+
+Document: `record_search_document(title, status, custom_values)` indexes the text three times:
+as written (the `simple` parser keeps emails, hosts, decimals, signed integers and hyphenated
+words whole), with `@` replaced by a space (the domain of an email becomes a host), and with
+every run of non-alphanumeric, non-space characters replaced by a space. Examples:
+`jane@acme.example` -> `jane@acme.example`, `acme.example`, `jane`, `acme`, `example`; `12500.5`
+-> `12500.5`, `12500`, `5`; `ops@example.com` -> also `example.com`. Each copy keeps consecutive
+positions, so the phrase query `to_tsquery` builds for a multi-part token (`foo-bar`, `a_b`)
+still matches. Tested queries (`21_phase3_fixes.sql`): `12500.5`, `12500`, `acme` (email value),
+`jane@acme.example`, `jane@acme`, `example.com`, `-5` (-> `5:*`), `café`, `ACME`. Known gap:
+`example.com` does not find `www.example.com` (one host lexeme).
+
+### `record.deleted` (contract C5)
+
+Written by `audit_record_delete()`, a **before** delete row trigger on `records`: `action
+'record.deleted'`, `entity_type 'record'`, `entity_id` the record id, `actor_id auth.uid()`,
+metadata exactly `{ module_id, title, attachment_count }` where `attachment_count` is the number
+of attachments rows the cascade is about to remove. Skipped when the module or the workspace no
+longer exists (module or workspace cascade; `module.deleted` stands for its records). Deviation
+from the "after-delete trigger" wording: the attachments cascade is an after-row RI trigger that
+has already removed the attachments when a user after-trigger runs, and a stash between a before
+and an after trigger needs per-row session state; a before-row trigger fires only for a row the
+statement deletes (after RLS and the row lock, re-checked under concurrent updates) and is
+rolled back with the statement on any error, so the audit row exists exactly when the record was
+deleted.
+
+### Schedule (pg_cron + pg_net + Vault)
+
+Both extensions are available in the local stack (pg_cron 1.6.4, pg_net 0.20.4) and on hosted
+Supabase; migration 006 creates them when available (`pg_cron` in `pg_catalog`, `pg_net` with
+schema `extensions`) and calls `schedule_storage_maintenance()`:
+
+| Job | Schedule | Command | Created when |
+| --- | -------- | ------- | ------------ |
+| `sweep-stale-attachments` | `5-59/10 * * * *` | `select public.sweep_stale_attachments()` | pg_cron exists |
+| `purge-attachments` | `*/10 * * * *` | `select public.invoke_purge_attachments()` | the Vault secrets `purge_attachments_service_key` and `purge_attachments_url` both exist |
+
+The key is never in a migration or a job definition: `invoke_purge_attachments()` reads both
+secrets from `vault.decrypted_secrets` at run time and calls `net.http_post` with `Authorization:
+Bearer <key>` and body `{"limit": 500}` (60 s timeout; responses land in `net._http_response`).
+After creating or rotating the secrets run `select public.schedule_storage_maintenance();`
+(idempotent; it removes the purge job again when a secret is missing). Setup:
+`docs/operations.md`, "Scheduled maintenance". Verified locally 2026-11-04: with both secrets the
+job is created and `invoke_purge_attachments()` got `200 {"data":{"purged":0,"alreadyGone":1,
+"retryable":0,"dead":0}}`; `db reset` removes the secrets again.
 
 ## RLS recursion note
 
@@ -749,7 +962,8 @@ audit. Functions never return the service-role key or an invitation token.
 | `auth.ts`       | `requireUser(req)`, `adminClient()`, `requireWorkspaceRole()`, `requireServiceRole(req)` | User-scoped client (anon key + caller JWT), service-role client, membership/role check; operator-only guard (bearer must equal the service-role or secret key, constant-time compare). |
 | `validation.ts` | `parseBody(req, schema)`                                    | JSON body through a Zod schema; failures -> 400 `validation_error` with flattened issues.    |
 | `audit.ts`      | `writeAudit(admin, event)`                                  | Inserts an `audit_events` row for writes no trigger covers (`export-records`: `records.exported`). |
-| `csv.ts`        | `buildCsv`, `csvRow`, `quoteField`, `neutralizeFormula`, `formatFieldCell`, `formatNumber`, `formatTimestamp`, `exportFileName`, `CSV_BOM` | Pure CSV helpers for `export-records` (no Deno or Supabase imports); tests in `csv.test.ts`. |
+| `csv.ts`        | `buildCsv`, `csvPreamble`, `csvRecordRows`, `selectLabelsByKey`, `csvRow`, `quoteField`, `neutralizeFormula`, `formatFieldCell`, `formatNumber`, `formatTimestamp`, `exportFileName`, `CSV_BOM` | Pure CSV helpers for `export-records` (no Deno or Supabase imports); tests in `csv.test.ts`. |
+| `search.ts`     | `searchTokens`, `buildPrefixTsQuery`, `MAX_SEARCH_TOKENS`   | The C4 search tokenizer (006); tests in `search.test.ts`.                                    |
 | `types.ts`      | `WorkspaceRole`, `WORKSPACE_ROLES`                          | Mirror of the `workspace_role` enum.                                                        |
 
 ### Error codes
@@ -759,7 +973,7 @@ audit. Functions never return the service-role key or an invitation token.
 |  400 | `validation_error`   | Body is not JSON or fails the Zod schema; `details` holds `{ formErrors, fieldErrors }`.         |
 |  401 | `unauthorized`       | No bearer token, or `auth.getUser()` rejects it. With `verify_jwt = true` the runtime answers a malformed or expired JWT first, with its own body (`{ code: "UNAUTHORIZED_..." }`); clients switch on the status. |
 |  403 | `forbidden`          | Caller is not a member, has an insufficient role, an admin invites as owner, or an invitation belongs to a different (or unverified) email. Non-membership and wrong role share one code so workspace existence is not revealed. |
-|  404 | `not_found`          | Invitation token unknown or already used.                                                      |
+|  404 | `not_found`          | Invitation token unknown or already used; `attachment-url`: attachment absent, not visible, pending or without object (one body). |
 |  405 | `method_not_allowed` | Anything but `POST` (and `OPTIONS`).                                                           |
 |  409 | `conflict`           | The invited email already belongs to a member of the workspace.                                |
 |  410 | `invitation_expired` | `expires_at` has passed.                                                                       |
@@ -817,9 +1031,9 @@ type RecordFilter =
 
 Each filter's `key` must be a field of the module and its `kind` must match the field type
 (otherwise `400 validation_error`, `details.fieldErrors.filters`). Search and filters are applied
-with exactly the PostgREST operators of `src/features/records/lib/records-filters.ts`, so the
-export of a filtered view contains the rows the table shows (in `created_at, id` order, not the
-table's sort).
+with exactly the PostgREST operators of `src/features/records/lib/records-filters.ts` and the C4
+tokenizer (`_shared/search.ts`, migration 006), so the export of a filtered view contains the
+rows the table shows (in `created_at, id` order, not the table's sort).
 
 Response `200` with headers `Content-Type: text/csv; charset=utf-8`,
 `Content-Disposition: attachment; filename="<module-slug>-YYYY-MM-DD.csv"` (UTC date),
@@ -838,20 +1052,28 @@ CSV format (`_shared/csv.ts`, unit tests in `_shared/csv.test.ts`):
   grouping, no currency symbol, no exponent (`12500.5`, `-42.5`); date `YYYY-MM-DD` as stored;
   `Created at` / `Updated at` ISO 8601 UTC (`2026-11-04T09:30:00.123Z`); missing or mistyped
   values empty.
-- Formula injection: every text cell (title, status, text, select label, timestamps) that
-  starts with `=`, `+`, `-`, `@`, tab or CR is prefixed with `'`. Number and currency cells are
-  produced from JSON numbers and are exempt, so `-42.5` stays a number.
+- Formula injection: every text cell (title, status, text, select label, timestamps) is
+  prefixed with `'` when it starts with tab or CR, or when its first character after leading
+  whitespace (any Unicode space, NBSP included) and quote characters (`"`, `'`, typographic
+  quotes) is `=`, `+`, `-`, `@` or a fullwidth form `＝ ＋ － ＠` (006). Number and currency cells
+  are produced from JSON numbers and are exempt, so `-42.5` stays a number.
 
 Rules and order: verify the JWT (`401`), validate the body (`400`), require owner or admin in the
 workspace via the service-role membership lookup (`403 forbidden` for `member`, non-members and
 unknown workspaces), load the module with the caller's client under RLS bound to `workspace_id`
 and `id` (`403 forbidden` with the identical body when it is not in the workspace, so existence is
-not revealed), count matching rows (`413 export_too_large`, `details: { limit: 50000 }`, above
-50,000), read the rows with the caller's client (RLS applies; `workspace_id` and `module_id`
-are bound in every query) in keyset pages of 1,000 on `(created_at, id)`, build the CSV, write
-`records.exported` `{ module_id, row_count, filtered }` (`filtered` = non-empty search or any
-filter) with `writeAudit` and the caller as `actor_id`, respond. A failure at any step writes no
-audit row and returns no CSV. Exports are not metered and are available on every plan.
+not revealed), count matching rows with a head count (`413 export_too_large`, `details: { limit:
+50000 }`, above 50,000; decided before any byte is sent), then **stream** (migration 006 /
+Part 17a): the response starts with the BOM and the header row, then one chunk per keyset page of
+1,000 on `(created_at, id)` read with the caller's client (RLS applies; `workspace_id` and
+`module_id` are bound in every query); after the last page it writes `records.exported` `{
+module_id, row_count, filtered }` (`filtered` = non-empty search or any filter) with `writeAudit`
+and the caller as `actor_id`, and closes. The response has no `Content-Length`
+(`Transfer-Encoding: chunked`). A failure before streaming returns the usual JSON error; a
+failure after the 200 (page read error, more than 50,000 rows appearing during the read, audit
+write error) aborts the stream, so the client sees a failed download and no audit row is
+written; a client that cancels the download also leaves no audit row. Exports are not metered
+and are available on every plan.
 
 Deviations from the B5 text, as specified for Part 13: the header is `Title, Record status,
 <labels>, Created at, Updated at` (no `id`, no `created_by` display name), checkbox values are
@@ -863,15 +1085,38 @@ Phase 5.
 ### `purge-attachments` (POST, operators only)
 
 Request `{}` or `{ limit?: 1..1000 }` (default 200), with `Authorization: Bearer <service-role
-key>`. Response `200 { data: { purged, failed, remaining } }`. Any other bearer (a user JWT, the
-anon key) gets `403 forbidden`; none gets `401`. It reads the oldest queue entries with fewer than
-10 attempts, skips names that a live `attachments` row still uses (defensive; impossible by
-construction), removes the objects with `storage.from(bucket).remove(names)`, deletes the
-processed queue rows and, on a Storage error, increments `attempts` and stores `last_error`.
-Idempotent and safe to run concurrently. Not audited: the deletion it completes was audited as
-`attachment.removed` (or is part of a record, module or workspace delete). `verify_jwt = true`
-works with the legacy service-role JWT; a hosted project that only has `sb_secret_...` keys
+key>`. Response (since 006) `200 { data: { purged, alreadyGone, retryable, dead } }`:
+
+| Field | Meaning |
+| ----- | ------- |
+| `purged` | objects this call removed from Storage |
+| `alreadyGone` | entries this call processed whose object did not exist (any more) |
+| `retryable` | entries left in the queue with `attempts < 10` (beyond `limit`, or failed in this call); call again while `retryable > 0` |
+| `dead` | entries with `attempts >= 10`, no longer retried (operator action, `docs/operations.md`) |
+
+Any other bearer (a user JWT, the anon key) gets `403 forbidden`; none gets `401`. It reads the
+oldest `limit` queue entries with fewer than 10 attempts, removes the objects with
+`storage.from(bucket).remove(names)` in chunks of 100 (a request body, so long names never
+overflow a URL), deletes the processed queue rows and, for a failed chunk, increments `attempts`
+and stores `last_error` without stopping the other chunks. Migration 005's defensive "live row"
+check was removed: `storage_path` embeds the row's primary key, ids are generated by the database
+(no client insert grant on `id`) and never reissued, so a queued name cannot belong to a live row
+(and the `in()` filter over long names overflowed the request URL, review H2). Verified
+2026-11-04: 300 entries with ~330-character names plus 3 real objects drained by one call with
+`limit: 500` (`{ purged: 3, alreadyGone: 300, retryable: 0, dead: 0 }`;
+`scripts/ci/purge-drain-check.sh`). Idempotent and safe to run concurrently. Not audited: the
+deletion it completes was audited as `attachment.removed` / `attachment.rejected` (or is part of
+a record, module or workspace delete). Scheduled through pg_cron (migration 006). `verify_jwt =
+true` works with the legacy service-role JWT; a hosted project that only has `sb_secret_...` keys
 must set `verify_jwt = false` for this function (it checks the key itself).
+
+### `attachment-url` (POST, migration 006)
+
+Contract C1 above. Order: verify the JWT (`requireUser`), validate `{ attachmentId }` with Zod,
+load `id, storage_path, file_name, uploaded_at` with the caller's client (RLS), then
+`createSignedUrl(storage_path, 60, { download: file_name })` with the service-role client and
+rewrite the origin to the public API origin. Not audited (a read). In `scripts/ci/functions-smoke.sh`
+(random id -> 404).
 
 ## Frontend (`src/`)
 
@@ -882,7 +1127,11 @@ workspaces and members features, the workspace context and the workspace-scoped 
 completing Phase 2. Part 11 (2026-11-04) added the field-type registry and the modules feature
 (list, templates, module page with a Fields tab, settings); Part 12 (2026-11-04) added the records
 list (search, filters, sort, pagination in the URL), the record form and the record pages; Part 14
-(2026-11-04) added attachments on the record page, "Export CSV" and the storage usage badge.
+(2026-11-04) added attachments on the record page, "Export CSV" and the storage usage badge. The
+Phase 3 review fixes (2026-11-04, against migration 006 contracts C1 to C5) moved downloads to the
+`attachment-url` function, made attachment deletes row-only, switched record edits to
+`update_record` with optimistic concurrency, aligned the search tokenizer with `export-records`
+and labelled `record.deleted`.
 
 ### Feature layout
 
@@ -928,7 +1177,8 @@ src/features/workspaces/
                        audit-labels.ts (action -> sentence, actor name or "Someone"; invitation
                        events name the role, never an email: metadata is `invitation_id`, `role`;
                        module.created/updated/deleted and field.created/deleted name the module
-                       or field label)
+                       or field label; record.deleted reads `deleted the record "{title}" (N
+                       attachments)` from `{ module_id, title, attachment_count }`)
   context/             workspace-context.ts (WorkspaceContext, useCurrentWorkspace),
                        WorkspaceProvider.tsx
   components/          WorkspaceSwitcher, CreateWorkspaceDialog, CreateWorkspaceForm,
@@ -961,12 +1211,14 @@ src/features/attachments/
                        EXTENSION_CONTENT_TYPES, ACCEPT_ATTRIBUTE, resolveContentType,
                        sanitiseFileName, validateFile -> too_large | empty | type_not_allowed |
                        too_many), storage-errors.ts (AttachmentError { code }, mapStorageError,
-                       mapAttachmentRowError, getAttachmentErrorMessage), attachment-permissions.ts
-                       (canDeleteAttachment: uploader or owner/admin), uploader-name.ts, file-icons.ts
+                       mapAttachmentRowError, mapAttachmentFunctionError, getAttachmentErrorMessage),
+                       attachment-permissions.ts (canDeleteAttachment: uploader or owner/admin),
+                       uploader-name.ts, file-icons.ts
   api/                 keys.ts (['attachments', ws, recordId]); attachment-queries.ts
                        (ATTACHMENT_COLUMNS, fetchAttachments + profiles); attachment-writes.ts
-                       (uploadAttachment, downloadAttachment, deleteAttachment: the raw sequences, no
-                       React); useAttachments, useUploadAttachment (batch + per-file progress),
+                       (uploadAttachment, downloadAttachment via `attachment-url`, deleteAttachment
+                       row-only: the raw sequences, no React); useAttachments, useUploadAttachment
+                       (batch + per-file progress, one invalidation per batch),
                        useDownloadAttachment, useDeleteAttachment; invalidate.ts (list + ['usage', ws])
   components/          AttachmentsSection (mounted by RecordDetail), AttachmentList (+ skeleton),
                        AttachmentDropzone, UploadProgressList, DeleteAttachmentDialog,
@@ -986,8 +1238,10 @@ src/features/records/
                        describeCustomValuesReason), records-query.ts (URL <-> RecordsQuery:
                        parseRecordsQuery, serialiseRecordsQuery, withFilter, withoutCriteria,
                        nextSort, hasActiveCriteria), records-filters.ts (applyRecordsQuery over a
-                       structural builder: search, filters, sort; buildPrefixTsQuery, escapeLike),
-                       record-values.ts (compactCustomValues, diffRecordPayload), record-errors.ts
+                       structural builder: search, filters, sort; tokenizeSearch,
+                       buildPrefixTsQuery, escapeLike), record-values.ts (compactCustomValues,
+                       RecordPatch, buildRecordPatch, isEmptyPatch), record-conflict.ts
+                       (isRecordConflict, rebaseFormValues, the conflict copy), record-errors.ts
                        (getRecordErrorMessage, mapRecordSaveError, RecordNotFoundError),
                        filter-labels.ts (chip text), pagination.ts (describePageRange, lastPage),
                        export-records.ts (canExportRecords, buildExportBody,
@@ -995,20 +1249,25 @@ src/features/records/
                        exportErrorFromResponse)
   api/                 keys.ts (['records', ws, moduleId, 'list', query], [..., 'detail', id],
                        ['records', ws, 'counts']); record-queries.ts (fetchRecords, countRecords,
-                       fetchRecord, fetchRecordCounts, RECORD_COLUMNS); useRecords, useRecord,
-                       useRecordCounts, useCreateRecord, useUpdateRecord, useDeleteRecord,
+                       fetchRecord, fetchRecordCounts, RECORD_COLUMNS); update-record-rpc.ts
+                       (updateRecordRpc: typed wrapper for `rpc('update_record')`); useRecords,
+                       useRecord, useRefreshRecord, useRecordCounts, useCreateRecord,
+                       useUpdateRecord, useDeleteRecord,
                        invalidate.ts (lists + counts + ['usage', ws]), use-export-records.ts
                        (exportRecords: raw fetch to export-records, useExportRecords)
   schemas/record.ts    buildRecordFormSchema(fields) (title 1..200, status <= 50, custom_values =
                        buildRecordSchema), emptyRecordFormValues, recordToFormValues,
                        toRecordPayload, missingRequiredFields
-  hooks/               useRecordsUrlState(fields) (useSearchParams <-> RecordsQuery, replace)
+  hooks/               useRecordsUrlState(fields) (useSearchParams <-> RecordsQuery, replace),
+                       useRecordConflict(form, base, loadLatest) (PT409 banner state + rebase)
   components/          RecordsTab (+ RecordsList), RecordsToolbar, filters/ (FILTER_CONTROLS per
                        registry filterKind: Text, Options, Boolean, NumberRange, DateRange),
                        RecordsTable, RecordsTableStates (skeleton, error, "No records yet",
-                       "No records match"), RecordsPagination, RecordForm, DiscardChangesDialog,
+                       "No records match"), RecordsPagination, RecordForm, RecordConflictBanner,
+                       DiscardChangesDialog,
                        RecordDetail (+ AttachmentsSection), DeleteRecordDialog, ExportCsvButton
-  pages/               NewRecordPage, RecordPage (read / ?edit=1, RecordNotFound), RecordPageShell
+  pages/               NewRecordPage, RecordPage (read / ?edit=1, RecordNotFound), EditRecord
+                       (snapshot, patch, reload), RecordPageShell
                        (module + fields loading, breadcrumb)
   types.ts             RecordItem, RecordsQuery, RecordFilter, RecordSort, PageSize, RecordsPage
 src/features/modules/
@@ -1018,11 +1277,12 @@ src/features/modules/
                        React); useModules(ws) (position then name, plus a field count per module
                        from a second `field_definitions` select), useModule(ws, id) (maybeSingle:
                        null = not found or hidden), useCreateModule(ws) (count -> position,
-                       applyTemplate, invalidates list, usage, audit), useUpdateModule(ws, id),
-                       useDeleteModule(ws) (navigate first, invalidate second),
+                       applyTemplate, invalidates list, usage, record counts, audit),
+                       useUpdateModule(ws, id), useDeleteModule(ws) (navigate first, invalidate
+                       second; removes the module's records cache, refreshes record counts),
                        useFieldDefinitions(ws, moduleId) (position order), useCreateField,
                        useUpdateField (label, required, options, settings only: never key or
-                       type), useDeleteField (also invalidates ['records', ws, moduleId]),
+                       type), useDeleteField (also invalidates recordKeys.module(ws, moduleId)),
                        useReorderFields (moveField + one position update per changed row,
                        optimistic), useWorkspaceUsage(ws) (rpc workspace_usage -> WorkspaceUsageRow,
                        EMPTY_WORKSPACE_USAGE fallback)
@@ -1031,9 +1291,10 @@ src/features/modules/
                        ^[a-z][a-z0-9_]{0,49}$, type from FIELD_TYPES, required, options 1..100
                        with distinct values for select, settings.currency from CURRENCY_CODES,
                        precision 0..6; fieldFormSchema is one flat form refined by type)
-  lib/                 module-errors.ts (23505 -> slug or key taken, 23514 -> options/settings
-                       check or the field guard messages, 42501 -> forbidden, PGRST116/23503 ->
-                       not found, ModuleNotFoundError/FieldNotFoundError for zero-row writes),
+  lib/                 module-errors.ts (23505 -> slug or key taken, moduleFieldError -> the slug
+                       or name input, getModuleFormErrorMessage; 23514 -> options/settings check
+                       or the field guard messages, 42501 -> forbidden, PGRST116/23503 -> not
+                       found, ModuleNotFoundError/FieldNotFoundError for zero-row writes),
                        module-permissions.ts (canManageModules o/a), field-key.ts
                        (deriveFieldKey, deriveOptionValue), field-payload.ts (form -> columns,
                        strips options/settings the type does not use), field-summary.ts,
@@ -1062,15 +1323,17 @@ src/lib/               download.ts (triggerDownload via a temporary anchor, save
                        10,485,760 bytes; formatDate/formatDateTime for timestamps; parseIsoDate and
                        formatDateOnly for `YYYY-MM-DD` values, parsed as local calendar dates so
                        they never shift by a day), postgrest-errors.ts (isPostgrestError,
-                       isNetworkError), workspace-roles.ts (getRoleLabel)
+                       isNetworkError), function-errors.ts (readFunctionError: envelope code,
+                       HTTP status, network flag of a functions.invoke error), workspace-roles.ts
+                       (getRoleLabel)
 src/types/database.ts  Row aliases: Profile, Workspace, WorkspaceMember, Invitation, AuditEvent,
                        WorkspaceRole, WORKSPACE_ROLES; migration 004: Module, FieldDefinition,
                        RecordRow (+ Insert/Update), FieldType, FIELD_TYPES, SelectOption,
                        FieldSettings, WorkspaceUsageRow; migration 005: Attachment,
                        AttachmentInsert (the five insertable columns)
 src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts (auth, from, rpc,
-                       storage.from, createStorageBucketMock,
-                       functions.invoke), workspace-context.tsx (stubbed WorkspaceProvider value),
+                       storage.from, createStorageBucketMock (upload only), functions.invoke),
+                       workspace-context.tsx (stubbed WorkspaceProvider value),
                        fields.ts (createTestField, createTestModule, createClientsFields),
                        query-builder-mock.ts (chainable PostgREST builder that records calls),
                        vitest-env.d.ts
@@ -1203,8 +1466,10 @@ control and the PostgREST operator. Adding a type means one registry entry plus 
 database enum value.
 
 - **Stored values** are what `records.custom_values` holds and what the schemas validate: text
-  `string` (trimmed, <= 2,000), number and currency `number` (finite; `settings.precision` caps
-  the decimals, currency defaults to 2), date `YYYY-MM-DD` string (checked as a real calendar
+  `string` (trimmed, <= 2,000; whitespace-only counts as empty), number and currency `number`
+  (finite, `abs(x) < 1e15` and at most 6 fractional digits whatever the precision, else "Number
+  out of range" as the server's `number out of range`; `settings.precision` caps the decimals
+  further, currency defaults to 2), date `YYYY-MM-DD` string (checked as a real calendar
   date), select one of `options[].value`, checkbox `boolean`. Inputs emit stored values, not DOM
   strings: the number input parses (`parseNumberInput`: empty -> null, unparsable -> the raw
   string so the schema reports it), the date and select inputs turn `''` into `null`.
@@ -1215,7 +1480,9 @@ database enum value.
 - **`buildRecordSchema(fields)`** returns `z.strictObject({ [key]: schema })` in field order;
   unknown keys fail client-side exactly as `custom_values.<key>: unknown field` does on the
   server. `buildDefaultValues(fields)` gives a new record's starting values (text `''`, checkbox
-  `false`, the rest `null`).
+  `false`, the rest `null`). An existing record's missing values use each entry's `emptyValue`
+  instead (text `''`, every other type `null`): a checkbox that was never set stays unset in the
+  form (shown unchecked) and is not sent unless the user changes it.
 - **Formatting**: currency uses `Intl.NumberFormat` with `settings.currency` and precision (plain
   decimal when the code is missing or invalid), number uses the precision (max 6 decimals when
   unset), date goes through `formatDateOnly`, checkbox is Yes/No, select shows the option label
@@ -1238,15 +1505,23 @@ database enum value.
   every rule (slug unique per workspace, key immutable, type frozen while records hold values,
   options still in use, the options/settings shapes). The hooks only map errors
   (`getModuleErrorMessage`) and never offer what the server forbids: `FieldDialog` locks `key`
-  and `type` on edit with a hint, and `useUpdateField` does not even accept them.
+  and `type` on edit with a hint, and `useUpdateField` does not even accept them. A duplicate
+  slug (23505, story B1) lands on the Slug input of `CreateModuleForm` and `ModuleSettingsForm`
+  (`setModuleFieldError`, `role="alert"` inline error) instead of the form-level message; a
+  unique constraint or key naming `name` lands on the name input. All field guards raise 23514;
+  there is no `P0001` branch and no field cap.
 - **Zero-row writes** (`.delete().select('id')` returning nothing, `.update().single()` giving
   `PGRST116`) are reported as not-found/forbidden exactly like the workspaces hooks.
   `useModule` uses `.maybeSingle()` so an id from another workspace renders the generic "Module
   not found" page (no detail about existence).
 - **Positions**: a new module gets `position = count` (one `head: true` count query), a new
   field `position = fields.length` from the loaded list. Reordering (`moveField`) renumbers
-  0..n-1 and issues one `update position` per changed row (PostgREST has no batch update; fields
-  are capped at 50), optimistically updating `['fields', ws, moduleId]`.
+  0..n-1 and issues one `update position` per changed row (PostgREST has no batch update; a
+  module has a handful of fields and the database sets no cap), optimistically updating
+  `['fields', ws, moduleId]`.
+- **Record caches**: creating a module refreshes `['records', ws, 'counts']`; deleting one removes
+  `['records', ws, moduleId]` and refreshes the counts; deleting a field invalidates
+  `recordKeys.module(ws, moduleId)` (the server strips its key from the records).
 - **Templates (B6)** live in `lib/templates.ts` as versioned code: `BLANK_TEMPLATE`,
   `HOUSEKEEPING_TASKS_TEMPLATE` (the D1 default, 8 fields) and `CLIENTS_TEMPLATE` (mirrors the
   seed). `applyTemplate(writer, template, module)` takes a `ModuleWriter`
@@ -1299,11 +1574,16 @@ written to the URL 300 ms after the last keystroke.
 
 - Select: explicit `RECORD_COLUMNS` (every column except the `search_vector` tsvector),
   `{ count: 'exact' }`, `.range(from, to)` with the page size capped at 100.
-- Search: the term's runs of letters, marks and digits become `word:*` joined with ` & ` (max 8
-  words, lowercased, deduplicated) and go to
-  `.textSearch('search_vector', q, { config: 'simple' })`. Quotes, colons, ampersands and other
-  tsquery syntax are dropped, so input can never form query syntax. A term without word
-  characters falls back to `.ilike('title', '%term%')` with backslash, `%` and `_` escaped.
+- Search (contract C4, `tokenizeSearch`, identical to the `export-records` tokenizer so the list
+  and the export match the same rows): split the input on whitespace and on every character that
+  is not a letter, mark, digit or one of `. @ - _ +`; strip `. @ - _ +` from both ends of each
+  token; drop empty tokens; lowercase; dedupe; keep at most 8. Each token becomes `token:*`,
+  joined with ` & `, and goes to `.textSearch('search_vector', q, { config: 'simple' })`.
+  Examples: `12500.5` -> `12500.5:*`, `jane@acme.example` -> `jane@acme.example:*`, `-5` ->
+  `5:*`, `a.b.` -> `a.b:*`, `"quoted"` -> `quoted:*`, `ACME acme` -> `acme:*`. Quotes, colons,
+  ampersands, `!`, `|`, parentheses and `*` are separators, so input can never form query
+  syntax. When no token remains (`...`) the search falls back to `.ilike('title', '%term%')`
+  with backslash, `%` and `_` escaped.
 - Filters (AND): text `.ilike('custom_values->>key', '%v%')`; one select option
   `.contains('custom_values', { key: v })` (GIN `jsonb_path_ops` index), several
   `.in('custom_values->>key', [...])`; checkbox `.contains('custom_values', { key: true|false })`;
@@ -1329,16 +1609,40 @@ written to the URL 300 ms after the last keystroke.
 - Checkbox filters ignore records without a value (they are neither true nor false).
 - PostgREST turns `*` in an ilike pattern into a wildcard, so a literal `*` in a text filter
   matches anything at that position.
-- Search matches tokens by prefix only: `ops@acme.example` is one email token, so "acme" does
-  not find it; "1234.5" becomes `1234:* & 5:*`. A 1-character term already searches (B3 says 2).
+- Search matches tokens by prefix only. Whether `acme` finds `ops@acme.example` depends on the
+  stored document, not on the client: migration 006's `record_search_document` indexes
+  punctuated values whole and in parts, so it does. A 1-character term already searches (B3
+  says 2). The search box keeps what the user typed: the URL holds the trimmed term,
+  and the box is only overwritten from the URL when `searchText.trim() !== query.search`
+  (back/forward, a shared link, "Clear all"), so a trailing space survives the debounce.
 
 **Writes:** `useCreateRecord` is the only insert path (Phase 4 hook for `check_entitlement`).
-`useUpdateRecord` sends only the changed columns of `title`, `status`, `custom_values`
-(`diffRecordPayload`), so a title-only edit of a stale record still succeeds server-side;
-`.single()` turns a vanished row into `PGRST116`. `useDeleteRecord` selects the deleted id and
-throws `RecordNotFoundError` on zero rows. Create and delete invalidate the module's lists,
-`['records', ws, 'counts']` and `['usage', ws]`; update refreshes the detail cache and the lists;
-`useDeleteField` already invalidates `['records', ws, moduleId]`.
+Edits go through `useUpdateRecord` -> `rpc('update_record', { p_record_id,
+p_expected_updated_at, p_patch })` (contract C3; `api/update-record-rpc.ts` types the call locally
+until `src/types/supabase.ts` is regenerated) and the returned row replaces the detail cache.
+`EditRecord` keeps a **snapshot** of the record taken when the edit form opened (not the latest
+cache) and builds `p_patch` with `buildRecordPatch(recordToFormValues(snapshot), values)`: only
+changed core fields (`title`, `status`, `null` clears it) and changed custom keys go in, `set`
+for new values and `unset` for keys cleared to empty; an empty patch sends nothing. The
+snapshot's `updated_at` is `p_expected_updated_at`. A title-only edit of a stale record or of a
+record whose checkbox was never set therefore sends `{ title }` alone, which the server accepts
+without re-validating `custom_values`. Errors: `PT409` (`record_changed`) is the conflict below,
+`PT404` reads as "This record no longer exists", 23514 lands on the field as before.
+`useDeleteRecord` selects the deleted id and throws `RecordNotFoundError` on zero rows. Create and
+delete invalidate the module's lists, `['records', ws, 'counts']` and `['usage', ws]`; delete
+also removes `['attachments', ws, recordId]` and refreshes the audit feed; update refreshes the
+detail cache and the lists.
+
+**Conflicts (PT409):** the form shows a non-destructive `role="alert"` banner "This record was
+changed by someone else. Reload to see the latest version; your edits are kept in the form." with
+a **Reload** button; nothing in the form changes. Reload fetches the record now
+(`useRefreshRecord`, `fetchQuery` with `staleTime: 0`), makes it the new snapshot and rebases the
+form (`rebaseFormValues`, a three-way merge): every field the user changed since the form opened
+keeps the user's value (and stays dirty), every other field takes the latest value. A polite
+status then says "Loaded the latest version. Fields you had changed keep your edits; review them
+and save again." The next save diffs against the new snapshot and sends its `updated_at`. If the
+reload fails the banner stays with "The latest version could not be loaded"; if the record was
+deleted meanwhile the page shows "Record not found".
 
 **Form:** `RecordForm` is a `useForm` over `buildRecordFormSchema(fields)` (title, "Record
 status" free text, one `RecordFieldControl` per field under `custom_values.<key>`). On a rejected
@@ -1359,7 +1663,9 @@ is not confused with a custom field named Status.
 **Delete and attachments:** `useDeleteRecord` deletes only the row. The attachment rows cascade
 and `enqueue_attachment_object_deletion` queues every object for `purge-attachments`; the client
 does not remove the objects first, because any member may delete a record while only the
-uploader or an owner/admin may remove each file. The delete dialog says attachments go too.
+uploader or an owner/admin may remove each file. The delete dialog says attachments go too. The
+server audits the delete as `record.deleted` with `{ module_id, title, attachment_count }`
+(contract C5); "Recent activity" shows `deleted the record "Acme" (2 attachments)`.
 
 **Create lands on the record:** since Part 14 `NewRecordPage` navigates (replace) to the new
 record's page instead of the list, where the Attachments section is; uploads need a saved record,
@@ -1398,7 +1704,8 @@ The type is `resolveContentType`: the browser's `File.type` without parameters w
 list, otherwise the extension's type (Windows reports `.csv` as `application/vnd.ms-excel` and
 `.zip` as `application/x-zip-compressed`; some files have no type), otherwise refused.
 `sanitiseFileName` keeps the last path segment, folds accents (NFKD, marks dropped), replaces each
-run of characters outside `[A-Za-z0-9 !._*'()&$@=;:+,?-]` with `_`, collapses whitespace, keeps an
+run of characters outside `[A-Za-z0-9 !._*'()&$@=;:+,-]` with `_` (so `?`, `#` and `%`, which
+migration 006 rejects because they break URLs, become `_` too), collapses whitespace, keeps an
 alphanumeric extension of at most 16 characters while truncating to 255, trims, and falls back to
 `file` (`報告書.pdf` -> `file.pdf`); dotfiles stay as they are. `AttachmentDropzone` runs
 `validateFile` per file and shows one inline message per rejected file in an `role="alert"`
@@ -1423,27 +1730,32 @@ targets the same handler. Both are disabled at 10 files and while a batch runs.
 
 `useUploadAttachment(ws, recordId)` runs a batch sequentially through a `useMutation` over
 `uploadAttachment`, passing the growing count, and keeps a local progress list per file
-(`queued` -> `uploading` -> removed on success, or `error` with the message until dismissed or the
-next batch). supabase-js `upload` reports no byte progress, so "uploading" is an indeterminate
-spinner. Each success invalidates `['attachments', ws, recordId]` and `['usage', ws]`; a polite
-live region announces "2 files uploaded." or "1 uploaded, 1 failed.".
+(`queued` -> `uploading` -> `done`, or `error` with the message until dismissed or the next
+batch). supabase-js `upload` reports no byte progress, so "uploading" is an indeterminate
+spinner. The batch never waits for a refetch between files: `['attachments', ws, recordId]` and
+`['usage', ws]` are invalidated once when the batch ends (also after failures), and the `done`
+entries ("Uploaded") leave the progress list when that refresh settles. A polite live region
+announces "2 files uploaded." or "1 uploaded, 1 failed.".
 
-**Download:** `createSignedUrl(storage_path, 60, { download: file_name })`, then a temporary
-anchor is clicked (`triggerDownload`). The `download` option makes Storage answer with
-`Content-Disposition: attachment`, so the browser saves under the original name and the app does
-not navigate (the anchor's own `download` attribute is ignored cross-origin). Errors are toasts.
+**Download** (contract C1): `functions.invoke('attachment-url', { body: { attachmentId } })`
+answers `{ data: { url, expiresAt } }`; a temporary anchor to `url` is clicked
+(`triggerDownload`). The function checks membership and signs a short-lived URL that answers
+with `Content-Disposition: attachment`, so the browser saves under the original name and the app
+does not navigate. The browser never calls `createSignedUrl` or `storage.download`. Errors use
+the `{ error: { code } }` envelope read like the members feature (`readFunctionError` in
+`src/lib/function-errors.ts`, falling back to the HTTP status): 401 `unauthorized` -> "Your
+session has expired", 404 `not_found` -> "This file or record no longer exists", 400
+`validation_error` and 500 `internal` -> the generic file error, a failed fetch -> network. Errors
+are toasts.
 
-**Delete** (`deleteAttachment`, B4 order): `storage.remove([storage_path])` first (the object is
-only visible to the policy while its row exists), then
-`from('attachments').delete().eq('workspace_id').eq('id').select('id')`. `remove` answers `[]`
-without an error when the policy hides the object or it was never uploaded, so the row delete
-decides: zero rows -> `AttachmentError('forbidden')` ("Only the uploader or an owner or admin can
-remove this file, or it was already removed."). A Storage error stops before the row delete. The
-row delete fires the queue trigger as well, so every UI delete adds one `storage_deletion_queue`
-entry for an object that is already gone (verified 2026-11-04: queue 0 -> 1 per delete;
-`purge-attachments` then answered `{ purged: 2, failed: 0, remaining: 0 }` for two such entries).
-`useDeleteAttachment` invalidates the list and usage on settle (also after a half-done delete).
-`DeleteAttachmentDialog` keeps failures in the dialog (`FormServerError`).
+**Delete** (contract C2): only the row,
+`from('attachments').delete().eq('workspace_id').eq('id').select('id')`. The
+`enqueue_attachment_object_deletion` trigger queues the object for `purge-attachments`; the
+browser never calls `storage.remove`. RLS filters a delete the caller may not make (or of a row
+already gone) to zero rows, which reads as `AttachmentError('forbidden')` ("Only the uploader or
+an owner or admin can remove this file, or it was already removed."). `useDeleteAttachment`
+invalidates the list and usage on settle. `DeleteAttachmentDialog` keeps failures in the dialog
+(`FormServerError`).
 
 **Errors** (`lib/storage-errors.ts`): Storage answers policy denials with HTTP 400 and the logical
 status in the body; storage-js copies the body's `statusCode` onto `StorageApiError`, which wins
@@ -1519,8 +1831,12 @@ module or workspace (or a malformed id) gets `RecordNotFound` the same way.
   fresh and on a used database.
 - Part 14 (done 2026-11-04): attachments UI on the record page (upload, download, delete),
   "Export CSV", storage usage on the Modules page, create -> record page. Vitest: 59 files, 418 tests.
-- Phase 3, still open: the Playwright primary journey (Part 15); scheduling
-  `purge-attachments` (Phase 5); a transactional `create_module_with_fields` for templates
-  (optional, see the modules section).
+- Part 15 (done 2026-11-04): Playwright primary journey and the isolation, auth and validation
+  specs (`tests/e2e`, see `docs/operations.md`, "End-to-end tests").
+- Part 17a (done 2026-11-04): migration 006 (Phase 3 review fixes above), Edge Function
+  `attachment-url`, streaming `export-records`, reworked `purge-attachments`, pg_cron schedule,
+  test `21_phase3_fixes`. Suite: 21 files, 973 tests, passing on a fresh and on a used database.
+- Phase 3, still open: a transactional `create_module_with_fields` for templates (optional, see
+  the modules section); the hosted Vault secrets for the purge job (Phase 5, `docs/operations.md`).
 - Phase 4: billing tables, `check_entitlement` (on top of `workspace_usage`), `create-workspace`,
   the record-audit and record-ownership decisions.

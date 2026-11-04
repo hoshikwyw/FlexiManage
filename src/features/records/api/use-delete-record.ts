@@ -1,5 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
+import { attachmentKeys } from '@/features/attachments/api/keys'
+import { workspaceKeys } from '@/features/workspaces/api/keys'
 import { supabase } from '@/lib/supabase'
 
 import { RecordNotFoundError } from '../lib/record-errors'
@@ -15,6 +17,8 @@ import { recordKeys } from './keys'
  * `enqueue_attachment_object_deletion` trigger queues every storage object for
  * `purge-attachments`; the client does not remove objects here, because a
  * member may delete a record holding files they could not remove themselves.
+ * The record's attachments cache is dropped; the server writes a
+ * `record.deleted` audit row (`{ module_id, title, attachment_count }`).
  */
 export function useDeleteRecord(workspaceId: string, moduleId: string) {
   const queryClient = useQueryClient()
@@ -34,7 +38,10 @@ export function useDeleteRecord(workspaceId: string, moduleId: string) {
     },
     onSuccess: (recordId) => {
       queryClient.removeQueries({ queryKey: recordKeys.detail(workspaceId, moduleId, recordId) })
+      queryClient.removeQueries({ queryKey: attachmentKeys.record(workspaceId, recordId) })
       invalidateRecordTotals(queryClient, workspaceId, moduleId)
+      // The server audits `record.deleted`; refresh the activity feed.
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.auditAll(workspaceId) })
     },
   })
 }

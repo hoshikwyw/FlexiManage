@@ -36,6 +36,7 @@ const REASON_MESSAGES: Record<string, string> = {
   'expected boolean': 'Tick or untick the box',
   'expected date YYYY-MM-DD': 'Enter a valid date (YYYY-MM-DD)',
   'not one of the options': 'Choose one of the current options',
+  'number out of range': 'Number out of range',
   'expected object': 'The record values were malformed. Reload the page and try again.',
 }
 

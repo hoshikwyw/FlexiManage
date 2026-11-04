@@ -11,6 +11,15 @@ import type { RecordItem, RecordsPage, RecordsQuery } from '../types'
  * `module_id` explicitly.
  */
 
+/*
+ * Embeds: `records` has two foreign keys to `modules` (`records_module_id_fkey`
+ * on module_id and the composite `records_module_workspace_fkey` on
+ * (module_id, workspace_id)), so a bare `modules(*)` embed is ambiguous
+ * (PostgREST PGRST201). Always name the FK:
+ * `select('..., modules!records_module_workspace_fkey(name)')`, and the same in
+ * the other direction (`records!records_module_workspace_fkey(...)`).
+ */
+
 /** Every column except `search_vector` (a tsvector the UI never needs). */
 export const RECORD_COLUMNS =
   'id, workspace_id, module_id, title, status, custom_values, created_by, created_at, updated_at'

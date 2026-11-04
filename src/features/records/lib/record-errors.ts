@@ -1,6 +1,7 @@
 import { NETWORK_ERROR_MESSAGE, isNetworkError, isPostgrestError } from '@/lib/postgrest-errors'
 
 import { describeCustomValuesReason, parseCustomValuesError } from './custom-values-errors'
+import { RECORD_CONFLICT_MESSAGE } from './record-conflict'
 
 export const RECORD_FORBIDDEN_MESSAGE =
   'You are not allowed to change records in this workspace. Ask an owner to check your membership.'
@@ -28,6 +29,9 @@ export function getRecordErrorMessage(error: unknown): string {
     switch (error.code) {
       case '42501': // insufficient_privilege (RLS)
         return RECORD_FORBIDDEN_MESSAGE
+      case 'PT409': // update_record: saved by someone else since the form opened
+        return RECORD_CONFLICT_MESSAGE
+      case 'PT404': // update_record: the record is gone or hidden
       case 'PGRST116': // zero rows for .single()
       case '23503': // module gone or in another workspace
         return RECORD_NOT_FOUND_MESSAGE

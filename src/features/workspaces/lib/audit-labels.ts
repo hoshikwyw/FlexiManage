@@ -26,6 +26,12 @@ function roleSuffix(value: unknown): string {
   return typeof value === 'string' && value ? ` (${value})` : ''
 }
 
+/** ` (2 attachments)` / ` (1 attachment)` when the metadata has a count, otherwise nothing. */
+function attachmentSuffix(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return ''
+  return ` (${value} attachment${value === 1 ? '' : 's'})`
+}
+
 /**
  * Human-readable fragment for an audit action, e.g. `invited a member (admin)`.
  * Invitation events carry `invitation_id` and `role` but never the invitee's
@@ -70,6 +76,18 @@ export function describeAuditAction(event: AuditEventWithActor): string {
       return `added the field "${text(m.label, text(m.key, 'untitled'))}"`
     case 'field.deleted':
       return `deleted the field "${text(m.label, text(m.key, 'untitled'))}"`
+    // Audited server-side with `{ module_id, title, attachment_count }`.
+    case 'record.deleted':
+      return `deleted the record "${text(m.title, 'Untitled')}"${attachmentSuffix(m.attachment_count)}`
+    // Migrations 005 and 006: attachment and export events.
+    case 'attachment.added':
+      return `attached the file "${text(m.file_name, 'file')}"`
+    case 'attachment.removed':
+      return `removed the file "${text(m.file_name, 'file')}"`
+    case 'attachment.rejected':
+      return `had the upload "${text(m.file_name, 'file')}" rejected`
+    case 'records.exported':
+      return m.filtered === true ? 'exported filtered records to CSV' : 'exported records to CSV'
     default:
       return event.action
   }

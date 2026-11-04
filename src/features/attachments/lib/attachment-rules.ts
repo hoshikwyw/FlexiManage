@@ -94,8 +94,12 @@ export function resolveContentType(file: {
   return EXTENSION_CONTENT_TYPES[getExtension(file.name)] ?? null
 }
 
-/** Characters outside `[A-Za-z0-9 !._*'()&$@=;:+,?-]` (the set Storage accepts in a key). */
-const DISALLOWED_RUN = /[^A-Za-z0-9 !._*'()&$@=;:+,?-]+/g
+/**
+ * Characters outside `[A-Za-z0-9 !._*'()&$@=;:+,-]`. Storage alone would accept `?`, but
+ * `attachment_file_name_is_valid()` rejects `?`, `#` and `%` (they break URLs), so they are
+ * replaced like every other character outside the set.
+ */
+const DISALLOWED_RUN = /[^A-Za-z0-9 !._*'()&$@=;:+,-]+/g
 /** Combining marks left by NFKD, so `é` becomes `e` instead of `_`. */
 const COMBINING_MARKS = /\p{M}+/gu
 const WHITESPACE_RUN = /\s+/g

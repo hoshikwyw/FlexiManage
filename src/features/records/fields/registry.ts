@@ -51,9 +51,23 @@ function decimalPlaces(value: number): number {
   return text.split('.')[1]?.length ?? 0
 }
 
+/**
+ * Server limits for number and currency values (`validate_record_custom_values()`
+ * rejects them with the reason `number out of range`): `abs(x) < 1e15` and at
+ * most 6 fractional digits, whatever the field's precision.
+ */
+export const NUMBER_ABS_LIMIT = 1e15
+export const NUMBER_OUT_OF_RANGE_MESSAGE = 'Number out of range'
+
+export function isNumberInRange(value: number): boolean {
+  return Math.abs(value) < NUMBER_ABS_LIMIT && decimalPlaces(value) <= MAX_PRECISION
+}
+
 function numberSchema(field: FieldDefinition, defaultPrecision?: number): ZodType {
   const precision = getFieldSettings(field).precision ?? defaultPrecision
-  let schema = z.number({ error: typeError('Enter a number') })
+  let schema = z
+    .number({ error: typeError('Enter a number') })
+    .refine(isNumberInRange, { error: NUMBER_OUT_OF_RANGE_MESSAGE, abort: true })
   if (precision !== undefined) {
     schema = schema.refine((value) => decimalPlaces(value) <= precision, {
       error:
@@ -99,6 +113,7 @@ const text: FieldTypeDefinition = {
   description: 'A line of text, up to 2,000 characters.',
   icon: TypeIcon,
   defaultValue: '',
+  emptyValue: '',
   zodSchema: (field) => {
     const base = z
       .string({ error: typeError('Enter text') })
@@ -117,6 +132,7 @@ const number: FieldTypeDefinition = {
   description: 'A decimal or whole number.',
   icon: HashIcon,
   defaultValue: null,
+  emptyValue: null,
   zodSchema: (field) => numberSchema(field),
   formatValue: (value, field) => formatNumber(value, getFieldSettings(field).precision),
   parseInput: parseNumberInput,
@@ -130,6 +146,7 @@ const currency: FieldTypeDefinition = {
   description: 'An amount of money in one currency.',
   icon: BanknoteIcon,
   defaultValue: null,
+  emptyValue: null,
   zodSchema: (field) => numberSchema(field, 2),
   formatValue: formatCurrency,
   parseInput: parseNumberInput,
@@ -143,6 +160,7 @@ const date: FieldTypeDefinition = {
   description: 'A calendar date without a time.',
   icon: CalendarIcon,
   defaultValue: null,
+  emptyValue: null,
   zodSchema: (field) =>
     optionalUnless(
       field.required,
@@ -164,6 +182,7 @@ const select: FieldTypeDefinition = {
   description: 'One option from a list you define.',
   icon: ListIcon,
   defaultValue: null,
+  emptyValue: null,
   zodSchema: (field) => {
     const values = new Set(getSelectOptions(field).map((option) => option.value))
     return optionalUnless(
@@ -191,6 +210,9 @@ const checkbox: FieldTypeDefinition = {
   description: 'Yes or no.',
   icon: SquareCheckIcon,
   defaultValue: false,
+  // A stored record without a value stays unset (rendered unchecked) and is not sent
+  // unless the user ticks or unticks the box.
+  emptyValue: null,
   zodSchema: (field) =>
     optionalUnless(field.required, z.boolean({ error: typeError('Tick or untick the box') })),
   formatValue: (value) => (value === true ? 'Yes' : value === false ? 'No' : ''),

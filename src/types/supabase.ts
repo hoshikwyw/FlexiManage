@@ -25,14 +25,14 @@ export type Database = {
           Tables: {
             "attachments": {
                   Row: {
-                    "content_type": string,"created_at": string,"file_name": string,"id": string,"record_id": string,"size_bytes": number,"storage_path": string,"uploaded_by": string | null,"workspace_id": string
+                    "content_type": string,"created_at": string,"file_name": string,"id": string,"record_id": string,"size_bytes": number,"storage_path": string,"uploaded_at": string | null,"uploaded_by": string | null,"workspace_id": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "content_type": string,"created_at"?: string,"file_name": string,"id"?: string,"record_id": string,"size_bytes": number,"storage_path"?: never,"uploaded_by"?: string | null,"workspace_id": string
+                    "content_type": string,"created_at"?: string,"file_name": string,"id"?: string,"record_id": string,"size_bytes": number,"storage_path"?: never,"uploaded_at"?: string | null,"uploaded_by"?: string | null,"workspace_id": string
                   }
                   Update: {
-                    "content_type"?: string,"created_at"?: string,"file_name"?: string,"id"?: string,"record_id"?: string,"size_bytes"?: number,"storage_path"?: never,"uploaded_by"?: string | null,"workspace_id"?: string
+                    "content_type"?: string,"created_at"?: string,"file_name"?: string,"id"?: string,"record_id"?: string,"size_bytes"?: number,"storage_path"?: never,"uploaded_at"?: string | null,"uploaded_by"?: string | null,"workspace_id"?: string
                   }
                   Relationships: [
                     {
@@ -252,12 +252,6 @@ isOneToOne: false
 "attachment_file_name_is_valid":
 { Args: { "p_file_name": string }; Returns: boolean
                            },
-"can_delete_attachment_object":
-{ Args: { "p_name": string }; Returns: boolean
-                           },
-"can_read_attachment_object":
-{ Args: { "p_name": string }; Returns: boolean
-                           },
 "can_upload_attachment_object":
 { Args: { "p_metadata": Json,"p_name": string }; Returns: boolean
                            },
@@ -273,15 +267,49 @@ isOneToOne: false
 "has_workspace_role":
 { Args: { "p_roles": (Database["public"]['Enums']["workspace_role"])[],"p_workspace_id": string }; Returns: boolean
                            },
+"invoke_purge_attachments":
+{ Args: Record<PropertyKey, never>; Returns: number
+                           },
 "is_workspace_member":
 { Args: { "p_workspace_id": string }; Returns: boolean
                            },
 "jsonb_values_text":
 { Args: { "p_values": Json }; Returns: string
                            },
+"record_search_document":
+{ Args: { "p_status": string,"p_title": string,"p_values": Json }; Returns: unknown
+                           },
+"schedule_storage_maintenance":
+{ Args: Record<PropertyKey, never>; Returns: string
+                           },
 "shares_workspace_with":
 { Args: { "p_user_id": string }; Returns: boolean
                            },
+"sweep_stale_attachments":
+{ Args: Record<PropertyKey, never>; Returns: number
+                           },
+"text_is_blank":
+{ Args: { "p_value": string }; Returns: boolean
+                           },
+"update_record":
+{ Args: { "p_expected_updated_at": string,"p_patch": Json,"p_record_id": string }; Returns: {
+              "created_at": string,
+"created_by": string | null,
+"custom_values": NonNullable<Json>,
+"id": string,
+"module_id": string,
+"search_vector": unknown,
+"status": string | null,
+"title": string,
+"updated_at": string,
+"workspace_id": string
+            }
+                          SetofOptions: {
+        from: "*"
+        to: "records"
+        isOneToOne: true
+        isSetofReturn: false
+      } },
 "workspace_usage":
 { Args: { "p_workspace_id": string }; Returns: {
               "attachments": number,"members": number,"modules": number,"records": number,"storage_bytes": number

@@ -2,7 +2,8 @@
 --   * search_vector is generated from title, status and the string/number
 --     custom values; full-text search finds a record by a custom value word,
 --     by title and by status; it follows updates; booleans are not indexed
---   * trigram ILIKE on title works and the GIN indexes exist
+--   * ILIKE on title works (the trigram index was dropped in migration 006)
+--     and the GIN indexes exist; the C4 tokenizer queries are in 21
 --   * search_vector cannot be written, even as postgres (generated column)
 --   * workspace_usage(): correct counts for a member, 42501 for a non-member,
 --     permission denied for anon
@@ -33,7 +34,7 @@ select tests.create_record(tests.rec_a2(), tests.mod_a(), 'Annual plan', '{"comp
 -- Structure
 -- ---------------------------------------------------------------------------
 select has_index('public', 'records', 'records_search_vector_idx', 'GIN index on search_vector exists');
-select has_index('public', 'records', 'records_title_trgm_idx', 'trigram GIN index on title exists');
+select hasnt_index('public', 'records', 'records_title_trgm_idx', 'the title trigram index is gone (migration 006; the ILIKE fallback runs on the module-scoped rows)');
 select has_index('public', 'records', 'records_custom_values_idx', 'GIN jsonb_path_ops index on custom_values exists');
 select has_index('public', 'records', 'records_workspace_module_created_idx', 'listing index (workspace_id, module_id, created_at desc) exists');
 select has_extension('extensions', 'pg_trgm', 'pg_trgm is installed in the extensions schema');

@@ -156,6 +156,15 @@ select tests.assert_seed_invariants();
 -- fields or records; they create their own inside the transaction with the
 -- fixed ids below (distinct from the seed ids 0a0001 / 0b0001 / 0f000N / 0e000N).
 -- ---------------------------------------------------------------------------
+-- TEST-ONLY GRANT. Migration 006 removed `id` from the insert grants of
+-- modules, field_definitions and records (clients never choose ids). The
+-- fixture helpers below insert the fixed ids while impersonating so that RLS
+-- is exercised with predictable rows; this grant restores exactly that one
+-- column for the duration of the test transaction (rolled back with it).
+-- 01_rls_enabled.sql (which does not include this file) and
+-- 21_phase3_fixes.sql (which revokes it first) assert the real grants.
+grant insert (id) on table public.modules, public.field_definitions, public.records to authenticated;
+
 -- Modules created by tests: one in A, one in B.
 create function tests.mod_a() returns uuid language sql immutable
   as $$ select '00000000-0000-0000-0000-00000000c0a1'::uuid $$;

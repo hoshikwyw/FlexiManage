@@ -69,12 +69,14 @@ export function RecordsList({
 
   // Search box: local text, synced from the URL when it changes elsewhere
   // ("Clear all", back/forward) and written to the URL 300 ms after the last
-  // keystroke. The timer calls the latest `setQuery` through a ref.
+  // keystroke. The URL holds the trimmed term, so the box is only overwritten
+  // when it means something else: "acme " stays as typed when the URL becomes
+  // "acme". The timer calls the latest `setQuery` through a ref.
   const [searchText, setSearchText] = useState(query.search)
   const [urlSearch, setUrlSearch] = useState(query.search)
   if (urlSearch !== query.search) {
     setUrlSearch(query.search)
-    setSearchText(query.search)
+    if (searchText.trim() !== query.search) setSearchText(query.search)
   }
   const setQueryRef = useRef(setQuery)
   const searchTimer = useRef<number | undefined>(undefined)

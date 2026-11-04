@@ -1,4 +1,4 @@
-import { CircleAlertIcon, LoaderCircleIcon, XIcon } from 'lucide-react'
+import { CircleAlertIcon, CircleCheckIcon, LoaderCircleIcon, XIcon } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { formatBytes } from '@/lib/format'
@@ -8,7 +8,8 @@ import type { UploadProgress } from '../types'
 /**
  * Files of the running batch. Progress is indeterminate (supabase-js upload
  * reports no byte progress): a spinner while uploading, "Waiting" while
- * queued, the error with a dismiss button when a file failed.
+ * queued, "Uploaded" until the batch's list refresh lands, the error with a
+ * dismiss button when a file failed.
  */
 export function UploadProgressList({
   uploads,
@@ -31,6 +32,8 @@ export function UploadProgressList({
               className="text-destructive mt-0.5 size-4 shrink-0"
               aria-hidden="true"
             />
+          ) : item.status === 'done' ? (
+            <CircleCheckIcon className="mt-0.5 size-4 shrink-0 text-green-600" aria-hidden="true" />
           ) : (
             <LoaderCircleIcon
               className="text-muted-foreground mt-0.5 size-4 shrink-0 motion-safe:animate-spin"
@@ -46,7 +49,9 @@ export function UploadProgressList({
                 ? item.error
                 : item.status === 'uploading'
                   ? `Uploading ${formatBytes(item.sizeBytes)}...`
-                  : 'Waiting'}
+                  : item.status === 'done'
+                    ? 'Uploaded'
+                    : 'Waiting'}
             </span>
           </div>
           {item.status === 'error' ? (

@@ -19,8 +19,9 @@ import { sortFieldKey } from './records-query'
  *   `compactCustomValues`), only foreign writers could.
  * - Date ranges: `custom_values->>key gte/lte 'YYYY-MM-DD'`: ISO dates compare
  *   correctly as text.
- * - Search: `search_vector @@ to_tsquery('simple', 'w1:* & w2:*')`, falling
- *   back to `title ilike %term%` when the term has no letters or digits.
+ * - Search: `search_vector @@ to_tsquery('simple', 't1:* & t2:*')` over the
+ *   tokens of `tokenizeSearch`, falling back to `title ilike %term%` when no
+ *   token remains.
  * - Sort: core columns directly; custom fields by `custom_values->key` (jsonb
  *   ordering: numbers numerically, strings by collation, false before true).
  *   Select fields sort by stored option value, not by label. Ties are broken
@@ -36,20 +37,40 @@ export interface RecordsQueryBuilder<Self> {
   order(column: string, options?: { ascending?: boolean; nullsFirst?: boolean }): Self
 }
 
-/** Maximum number of words turned into the prefix query. */
-const MAX_SEARCH_WORDS = 8
-const WORD = /[\p{L}\p{M}\p{N}]+/gu
+/** Maximum number of tokens turned into the prefix query. */
+const MAX_SEARCH_TOKENS = 8
+/** Splits on whitespace and every character that is not a letter, mark, digit or `. @ - _ +`. */
+const TOKEN_SEPARATOR = /[^\p{L}\p{M}\p{N}.@\-_+]+/u
+/** `. @ - _ +` at either end of a token (kept inside: `12500.5`, `jane@acme.example`). */
+const TOKEN_EDGE_PUNCTUATION = /^[.@\-_+]+|[.@\-_+]+$/g
 
 /**
- * Prefix tsquery for a free-text search: every run of letters, marks and
- * digits becomes `word:*`, joined with `&`. Anything else (quotes, colons,
- * ampersands, parentheses, `!`, `|`) is dropped, so user input can never form
- * tsquery syntax. Null when the term has no word characters.
+ * Search tokens, identical to `searchTokens` in
+ * `supabase/functions/_shared/search.ts` (used by `export-records`) so the
+ * list and the export match the same rows: NFC-normalise (composed and
+ * decomposed accents agree); split on whitespace and on every character that
+ * is not a letter, mark, digit or one of `. @ - _ +`; strip those five from
+ * both ends of each token; drop empty tokens; lowercase; dedupe; keep at most 8.
+ */
+export function tokenizeSearch(term: string): string[] {
+  const tokens = term
+    .normalize('NFC')
+    .split(TOKEN_SEPARATOR)
+    .map((token) => token.replace(TOKEN_EDGE_PUNCTUATION, ''))
+    .filter((token) => token !== '')
+    .map((token) => token.toLowerCase())
+  return [...new Set(tokens)].slice(0, MAX_SEARCH_TOKENS)
+}
+
+/**
+ * Prefix tsquery for a free-text search: each token becomes `token:*`, joined
+ * with ` & `. Quotes, colons, ampersands, parentheses, `!`, `|` and `*` are
+ * separators, and the kept punctuation (`. @ - _ +`) is not tsquery syntax, so
+ * user input can never form operators. Null when no token remains.
  */
 export function buildPrefixTsQuery(term: string): string | null {
-  const words = term.normalize('NFC').toLowerCase().match(WORD) ?? []
-  const unique = [...new Set(words)].slice(0, MAX_SEARCH_WORDS)
-  return unique.length > 0 ? unique.map((word) => `${word}:*`).join(' & ') : null
+  const tokens = tokenizeSearch(term)
+  return tokens.length > 0 ? tokens.map((token) => `${token}:*`).join(' & ') : null
 }
 
 /** Escapes LIKE wildcards (`\`, `%`, `_`) so the term matches literally. */

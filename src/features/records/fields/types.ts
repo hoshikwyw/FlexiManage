@@ -37,6 +37,12 @@ export interface FieldTypeDefinition {
   /** Value a new record starts with for this type. */
   defaultValue: unknown
   /**
+   * Form value of an existing record that has no stored value for the field
+   * ("no value": `''` for text, `null` otherwise). Unlike `defaultValue` it
+   * never invents a value, so an untouched field is not sent on save.
+   */
+  emptyValue: unknown
+  /**
    * Zod schema for the stored value of one field. `required` makes it
    * non-optional and non-empty; otherwise null and undefined are accepted.
    */

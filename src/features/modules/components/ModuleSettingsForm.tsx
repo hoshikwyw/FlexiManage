@@ -11,9 +11,10 @@ import { FieldGroup } from '@/components/ui/field'
 import type { Module } from '@/types/database'
 
 import { useUpdateModule } from '../api/use-update-module'
-import { getModuleErrorMessage } from '../lib/module-errors'
+import { getModuleFormErrorMessage } from '../lib/module-errors'
 import { MODULE_ICONS, MODULE_ICON_LABELS, isModuleIconName } from '../lib/module-icons'
 import { updateModuleSchema, type UpdateModuleInput } from '../schemas/module'
+import { setModuleFieldError } from './set-module-field-error'
 
 interface ModuleSettingsFormProps {
   workspaceId: string
@@ -49,8 +50,9 @@ export function ModuleSettingsForm({ workspaceId, module, readOnly }: ModuleSett
       })
       form.reset(toForm(saved))
       toast.success('Module updated')
-    } catch {
-      // Rendered from `updateModule.error`.
+    } catch (error) {
+      // A duplicate slug or name goes on its input; anything else is rendered from `updateModule.error`.
+      setModuleFieldError(form.setError, error)
     }
   })
 
@@ -95,9 +97,7 @@ export function ModuleSettingsForm({ workspaceId, module, readOnly }: ModuleSett
           ]}
         />
       </FieldGroup>
-      <FormServerError
-        message={updateModule.error ? getModuleErrorMessage(updateModule.error) : null}
-      />
+      <FormServerError message={getModuleFormErrorMessage(updateModule.error)} />
       {readOnly ? (
         <p className="text-muted-foreground text-sm">Only owners and admins can change modules.</p>
       ) : (

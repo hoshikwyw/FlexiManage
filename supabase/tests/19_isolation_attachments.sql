@@ -11,7 +11,8 @@
 --     { record_id, file_name, size_bytes }
 --   * cleanup queue: direct, record-cascade and workspace-cascade deletes
 --     enqueue the object; the queue is invisible to clients
---   * workspace_usage() attachments and storage_bytes
+--   * workspace_usage() attachments and storage_bytes (uploaded rows only
+--     since migration 006)
 --
 -- Independent of pre-existing rows: users, modules, records and attachments
 -- are fixtures created here; destructive steps are scoped to fixture ids.
@@ -283,8 +284,8 @@ select tests.create_attachment('00000000-0000-0000-0000-00000000c0c3', 'two.png'
 
 select results_eq(
   $sql$select modules, records, members, attachments, storage_bytes from public.workspace_usage('00000000-0000-0000-0000-00000000c0c1')$sql$,
-  $sql$values (1, 1, 1, 2, 350::bigint)$sql$,
-  'workspace_usage counts attachments and sums their sizes into storage_bytes');
+  $sql$values (1, 1, 1, 2, 0::bigint)$sql$,
+  'workspace_usage counts pending attachments, but storage_bytes only sums uploaded ones (migration 006)');
 select is(tests.rows_affected($sql$delete from public.workspaces where id = '00000000-0000-0000-0000-00000000c0c1'$sql$),
   1, 'carol: deletes her workspace');
 select tests.logout();
@@ -292,6 +293,8 @@ select is((select count(*)::int from public.storage_deletion_queue where workspa
   'a workspace delete enqueues every attachment object, and the entries survive the workspace');
 
 -- workspace_usage on a seed workspace: a delta against the start of the file.
+-- Mark record A2's rows as uploaded (what reconcile_attachment_object does).
+update public.attachments set uploaded_at = now() where record_id = tests.rec_a2();
 select tests.login_as(tests.alice());
 select ok(
   (select attachments >= 10 and storage_bytes >= 10485760 from public.workspace_usage(tests.ws_a())),

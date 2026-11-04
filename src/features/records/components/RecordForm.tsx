@@ -10,9 +10,12 @@ import { FieldGroup, FieldSeparator } from '@/components/ui/field'
 import { RecordFieldControl } from '@/features/records/fields/RecordFieldControl'
 import type { FieldDefinition } from '@/types/database'
 
+import { useRecordConflict } from '../hooks/use-record-conflict'
+import { isRecordConflict } from '../lib/record-conflict'
 import { mapRecordSaveError } from '../lib/record-errors'
 import { buildRecordFormSchema, type RecordFormValues } from '../schemas/record'
 import { DiscardChangesDialog } from './DiscardChangesDialog'
+import { RecordConflictBanner } from './RecordConflictBanner'
 
 interface RecordFormProps {
   fields: readonly FieldDefinition[]
@@ -24,6 +27,11 @@ interface RecordFormProps {
   onCancel: () => void
   /** The server named a field the form does not know: refetch the definitions. */
   onFieldsStale?: () => void
+  /**
+   * Edit mode: loads the latest version after a `PT409` conflict (null when the
+   * record is gone). Without it a conflict is shown as a form-level error.
+   */
+  onReloadLatest?: () => Promise<RecordFormValues | null>
 }
 
 /**
@@ -31,7 +39,9 @@ interface RecordFormProps {
  * by `buildRecordFormSchema` before anything is sent. A server 23514
  * `custom_values.<key>: <reason>` lands on that field (also for a required
  * field added after the record was created); everything else, including
- * 42501, is a form-level error. Leaving with unsaved changes asks first.
+ * 42501, is a form-level error. A `PT409` conflict shows `RecordConflictBanner`
+ * and keeps every value; "Reload" rebases the form onto the latest version
+ * (`useRecordConflict`). Leaving with unsaved changes asks first.
  */
 export function RecordForm({
   fields,
@@ -41,11 +51,13 @@ export function RecordForm({
   onSubmit,
   onCancel,
   onFieldsStale,
+  onReloadLatest,
 }: RecordFormProps) {
   const schema = useMemo(() => buildRecordFormSchema(fields), [fields])
   const form = useForm<RecordFormValues>({ resolver: zodResolver(schema), defaultValues })
   const [serverError, setServerError] = useState<string | null>(null)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const conflict = useRecordConflict(form, defaultValues, onReloadLatest)
   const isDirty = form.formState.isDirty
 
   useEffect(() => {
@@ -57,9 +69,14 @@ export function RecordForm({
 
   const submit = form.handleSubmit(async (values) => {
     setServerError(null)
+    conflict.dismiss()
     try {
       await onSubmit(values)
     } catch (error) {
+      if (conflict.enabled && isRecordConflict(error)) {
+        conflict.markConflict()
+        return
+      }
       const keys = fields.map((field) => field.key)
       const mapped = mapRecordSaveError(error, keys)
       if (mapped.field) {
@@ -112,6 +129,7 @@ export function RecordForm({
         ))}
       </FieldGroup>
 
+      <RecordConflictBanner state={conflict.state} onReload={() => void conflict.reload()} />
       <FormServerError message={serverError} />
 
       {/* No uploads here: an attachment needs an existing record, so files are added on the

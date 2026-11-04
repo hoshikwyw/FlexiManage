@@ -79,6 +79,7 @@ describe('useUploadAttachment', () => {
     await act(async () => first.resolve({} as AttachmentRow))
     await waitFor(() =>
       expect(hook.result.current.uploads.map((u) => [u.name, u.status])).toEqual([
+        ['a.png', 'done'],
         ['b.pdf', 'uploading'],
       ]),
     )
@@ -86,13 +87,34 @@ describe('useUploadAttachment', () => {
       file: fileB,
       existingCount: 3,
     })
+    // No list refetch between files: the batch invalidates once at the end.
+    expect(invalidate).not.toHaveBeenCalled()
 
     await act(async () => second.resolve({} as AttachmentRow))
     await expect(batch).resolves.toEqual({ uploaded: 2, failed: 0 })
     await waitFor(() => expect(hook.result.current.isUploading).toBe(false))
-    expect(hook.result.current.uploads).toEqual([])
+    await waitFor(() => expect(hook.result.current.uploads).toEqual([]))
+    expect(invalidate).toHaveBeenCalledTimes(2)
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['attachments', WS, RECORD] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['usage', WS] })
+  })
+
+  it('does not wait for the list refetch before uploading the next file', async () => {
+    vi.mocked(uploadAttachment)
+      .mockReset()
+      .mockResolvedValueOnce({} as AttachmentRow)
+      .mockResolvedValueOnce({} as AttachmentRow)
+    const { hook, invalidate } = setup()
+    // A refetch that never settles would stall a batch that awaited it.
+    invalidate.mockImplementation(() => new Promise<void>(() => undefined))
+
+    let result: { uploaded: number; failed: number } | undefined
+    await act(async () => {
+      result = await hook.result.current.upload([fileA, fileB], 0)
+    })
+    expect(result).toEqual({ uploaded: 2, failed: 0 })
+    expect(uploadAttachment).toHaveBeenCalledTimes(2)
+    expect(invalidate).toHaveBeenCalledTimes(2)
   })
 
   it('keeps a failed file with its message, continues with the next and does not count it', async () => {

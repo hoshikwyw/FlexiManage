@@ -13,7 +13,7 @@ import {
 } from './attachment-rules'
 
 /** The server's rule (`attachment_file_name_is_valid`), to check every sanitised name against. */
-const SERVER_NAME_RULE = /^[A-Za-z0-9 !._*'()&$@=;:+,?-]+$/
+const SERVER_NAME_RULE = /^[A-Za-z0-9 !._*'()&$@=;:+,-]+$/
 function expectServerValid(name: string) {
   expect(name.length).toBeGreaterThanOrEqual(1)
   expect(name.length).toBeLessThanOrEqual(255)
@@ -65,6 +65,14 @@ describe('sanitiseFileName', () => {
     expect(sanitiseFileName('Angebot für Müller.xlsx')).toBe('Angebot fur Muller.xlsx')
     expect(sanitiseFileName('plan 📅 2026.png')).toBe('plan _ 2026.png')
     expect(sanitiseFileName('a#b%c{d}.txt')).toBe('a_b_c_d_.txt')
+  })
+
+  it('replaces ?, # and % (the server rejects them because they break URLs)', () => {
+    expect(sanitiseFileName('what?.pdf')).toBe('what_.pdf')
+    expect(sanitiseFileName('issue #12.txt')).toBe('issue _12.txt')
+    expect(sanitiseFileName('100% done.png')).toBe('100_ done.png')
+    expect(sanitiseFileName('a?#%b.csv')).toBe('a_b.csv')
+    expect(sanitiseFileName('???.pdf')).toBe('file.pdf')
   })
 
   it('falls back to "file" when nothing of the name survives, keeping the extension', () => {
@@ -120,6 +128,7 @@ describe('sanitiseFileName', () => {
     'emoji 😀😀.csv',
     'ctrl\u0001char.txt',
     'semi;colon:plus+comma,question?.pdf',
+    'query?x=1#frag%20.png',
   ])('always produces a name the server accepts: %j', (input) => {
     expectServerValid(sanitiseFileName(input))
   })
