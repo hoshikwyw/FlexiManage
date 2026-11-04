@@ -238,3 +238,69 @@ create function tests.values_of(p_record uuid) returns jsonb
 language sql security definer set search_path = '' as $$
   select r.custom_values from public.records r where r.id = p_record
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Attachment fixtures (migration 005). attachments.id is not insertable by
+-- clients (column grant), so the helpers return the generated id; tests keep
+-- it with tests.remember_text(). Run as postgres for fixtures (then
+-- p_uploaded_by is required, there is no auth.uid()), or while impersonating
+-- to go through RLS (then uploaded_by defaults to auth.uid()).
+-- ---------------------------------------------------------------------------
+create function tests.create_attachment(
+  p_record uuid, p_file_name text, p_uploaded_by uuid default null,
+  p_size bigint default 100, p_content_type text default 'text/plain', p_ws uuid default null
+) returns uuid language plpgsql as $$
+declare
+  v_ws uuid := coalesce(p_ws, tests.record_workspace(p_record));
+  v_id uuid;
+begin
+  if p_uploaded_by is null then
+    insert into public.attachments (workspace_id, record_id, file_name, content_type, size_bytes)
+    values (v_ws, p_record, p_file_name, p_content_type, p_size)
+    returning id into v_id;
+  else
+    insert into public.attachments (workspace_id, record_id, file_name, content_type, size_bytes, uploaded_by)
+    values (v_ws, p_record, p_file_name, p_content_type, p_size, p_uploaded_by)
+    returning id into v_id;
+  end if;
+  return v_id;
+end;
+$$;
+
+-- Workspace of a record, readable while impersonating.
+create function tests.record_workspace(p_record uuid) returns uuid
+language sql security definer set search_path = '' as $$
+  select r.workspace_id from public.records r where r.id = p_record
+$$;
+
+-- storage_path of an attachment, readable while impersonating (also after RLS
+-- would hide the row).
+create function tests.path_of(p_attachment uuid) returns text
+language sql security definer set search_path = '' as $$
+  select a.storage_path from public.attachments a where a.id = p_attachment
+$$;
+
+-- Insert a storage object in the attachments bucket as the current role, the
+-- way storage-api does after an upload (owner = caller, metadata with size and
+-- mimetype). p_metadata null mimics the pre-upload check (can_insert_object).
+create function tests.put_object(p_name text, p_metadata jsonb default null) returns void
+language plpgsql as $$
+begin
+  insert into storage.objects (bucket_id, name, owner, owner_id, metadata)
+  values ('attachments', p_name, auth.uid(), auth.uid()::text, p_metadata);
+end;
+$$;
+
+-- Metadata storage-api writes for an uploaded object.
+create function tests.object_meta(p_size bigint, p_mimetype text default 'text/plain') returns jsonb
+language sql immutable as $$
+  select jsonb_build_object('size', p_size, 'mimetype', p_mimetype, 'contentLength', p_size,
+                            'httpStatusCode', 200, 'cacheControl', 'no-cache')
+$$;
+
+-- storage-api sets this before every delete; storage.protect_delete() refuses
+-- direct deletes from storage.objects otherwise.
+create function tests.allow_storage_delete() returns void
+language sql as $$
+  select set_config('storage.allow_delete_query', 'true', true)
+$$;

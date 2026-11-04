@@ -124,14 +124,14 @@ Follow-ups from Phase 2 (scheduled in Phase 4 unless noted):
 Agents: supabase-engineer, frontend-dev, test-engineer, code-reviewer.
 
 - [x] Migration 004 (done 2026-11-03): `modules`, `field_definitions`, `records` (structured core + `custom_values jsonb`) with RLS, validation and audit (supabase-engineer). `attachments` moves to the storage migration below.
-- [ ] Storage bucket `attachments` with path policy `{workspace_id}/{record_id}/{file}` (supabase-engineer).
+- [x] (done 2026-11-04) Storage bucket `attachments` with path policy `{workspace_id}/{record_id}/{file}` (supabase-engineer). Migration 005: `attachments` table (insert-before-upload, generated `storage_path` `{workspace_id}/{record_id}/{attachment_id}-{file_name}`, cap 10 per record, 10 MB, MIME allow-list), private bucket, `storage.objects` policies via security definer helpers, `storage_deletion_queue` + Edge Function `purge-attachments` for cleanup (scheduling is Phase 5), `workspace_usage` gains `attachments` and `storage_bytes`; see `docs/architecture.md`, "Attachments".
 - [x] (done 2026-11-03) Full-text and trigram search on records scoped by workspace (supabase-engineer).
 - [x] (done 2026-11-04) Field-type registry: text, number, date, select, checkbox, currency (frontend-dev). `src/features/records/fields/` with `buildRecordSchema` for Part 12.
 - [x] (done 2026-11-04) Module settings page: define fields, order, required flag (frontend-dev). Modules list, create dialog, module page (Records placeholder + Fields tab), settings page with danger zone.
 - [x] (done 2026-11-04) Records table with sorting, filters, pagination and search (frontend-dev). Server-side via PostgREST, view state in the URL; limitations (select sorts by option value, not label; checkbox filters ignore records without a value) in `docs/architecture.md`, "Records feature".
 - [x] (done 2026-11-04) Record create and edit form generated from field definitions (frontend-dev). `/records/new` and `/records/:recordId` (`?edit=1`), server 23514 mapped onto the field, stale required fields prompted; attachment and export slots left for Parts 13-14.
 - [ ] Attachment upload and download on a record (frontend-dev).
-- [ ] CSV export via Edge Function `export-records` with audit event (supabase-engineer).
+- [x] (done 2026-11-04, backend part) CSV export via Edge Function `export-records` with audit event (supabase-engineer). Owner/admin only, search and the records filters, 50,000-row cap (`export_too_large`), `records.exported`; the "Export CSV" button is Part 14.
 - [x] (done 2026-11-04, frontend part) Module templates (added 2026-11-03, Epic B6): templates shipped as code under `src/features/modules/lib/templates.ts` ("Blank", "Housekeeping tasks" = D1 default, "Clients"); "start from a template" on an empty modules list and in "New module". Open for supabase-engineer: the create is sequential (module insert, then field inserts, best-effort delete on failure), not one transaction; a `create_module_with_fields` SQL function or Edge Function can replace `applyTemplate`'s writer without touching the UI.
 - [ ] Unit tests for field registry and Zod schema generation; component tests for form and table (test-engineer).
 - [ ] Playwright primary journey (test-engineer).
@@ -143,7 +143,7 @@ Exit criteria: the chosen workflow from D1 can be completed end to end with real
 
 Agents: supabase-engineer, frontend-dev, test-engineer.
 
-- [ ] Migration 005: `plans`, `subscriptions`, `entitlements`, `usage_counters` seeded with Free, Pro, Business (supabase-engineer).
+- [ ] Migration 006 (renumbered 2026-11-04: 005 is attachments): `plans`, `subscriptions`, `entitlements`, `usage_counters` seeded with Free, Pro, Business (supabase-engineer).
 - [ ] Postgres function `check_entitlement(workspace_id, resource)` called from insert triggers on members, modules, records, attachments (supabase-engineer).
 - [ ] Usage page showing counters against limits with over-limit state, no auto-deletion on downgrade (frontend-dev).
 - [ ] Admin-only and owner-only UI gating matching server rules (frontend-dev).
@@ -262,7 +262,7 @@ the segment only changes the template seeded in B6. Conventions that apply to ev
 - **Plan limits.** Phase 4 meters `modules` (per workspace), `records` (per workspace across all
   modules), `storage_bytes` and `attachments` (per workspace) and `members`. Phase 3 does not enforce
   them, but every creation in this epic goes through exactly one insert path (a table insert, one
-  SQL function or one Edge Function) so `check_entitlement` can be attached in migration 005 without
+  SQL function or one Edge Function) so `check_entitlement` can be attached in migration 006 without
   changing the UI. Field definitions and select options are not metered by plan; they get fixed
   caps (hypothesis: 50 fields per module, 30 options per select field) enforced in the database.
   Every quota figure in this epic is a hypothesis until Phase 6.
@@ -528,22 +528,25 @@ Run with two seeded workspaces (A, B) and one user in each. Every tenant-owned t
 | modules | [x] | [x] | [x] | [x] |
 | field_definitions | [x] | [x] | [x] | [x] |
 | records | [x] | [x] | [x] | [x] |
-| attachments (table and storage) | [ ] | [ ] | [ ] | [ ] |
+| attachments (table and storage) | [x] | [x] | [x] | [x] |
 | audit_events | [x] | [x] | [x] | [x] |
 | subscriptions / entitlements / usage_counters | [ ] | [ ] | [ ] | [ ] |
 
 Done cells are proven by `supabase/tests/02_isolation_workspaces.sql`, `03_isolation_members.sql`,
-`04_isolation_invitations.sql` and `05_isolation_audit_events.sql` (run with `npm run test:db`, also
-in the CI `db-tests` job). For `invitations` and `audit_events` the update and delete cells are
-satisfied by a stricter rule: `authenticated` has no update grant on `invitations` and no insert,
-update or delete grant on `audit_events`, so the command fails with `permission denied` for every
+`04_isolation_invitations.sql` and `05_isolation_audit_events.sql`; `modules`, `field_definitions`
+and `records` by `13` to `15`; `attachments` by `19_isolation_attachments.sql` (table) and
+`20_storage_policies.sql` (bucket `attachments`: select, insert and delete on `storage.objects`
+as the other workspace's owner; update has no policy) (run with `npm run test:db`, also in the CI
+`db-tests` job). For `invitations`, `audit_events` and `attachments` the update cell (and for
+`invitations` and `audit_events` the delete cell) is satisfied by a stricter rule: `authenticated` has no update grant on `invitations` or `attachments` and no
+insert, update or delete grant on `audit_events`, so the command fails with `permission denied` for every
 row, including the caller's own workspace. `profiles` has no `workspace_id` and is covered
 separately in `06_isolation_profiles.sql` (own row plus shared-workspace visibility only).
 
 Plus: Edge Functions `invite-member` and `export-records` return 403 when the caller is not a member of the target workspace, and 403 when the caller is a `member` for admin-only actions.
 
 - [x] `invite-member`: verified by HTTP on 2026-10-30 against the local stack (non-member 403, `member` 403, admin inviting as owner 403, owner 200; see `docs/architecture.md`, Edge Functions).
-- [ ] `export-records`: Phase 3.
+- [x] `export-records`: verified by HTTP on 2026-11-04 against the local stack (owner of B exporting A's module 403, the same module through B's workspace id 403 with an identical body, `member` 403, unknown workspace 403, owner 200 `text/csv`; see `docs/architecture.md`, Edge Functions). `scripts/ci/functions-smoke.sh` repeats the non-member 403 and the owner 200.
 
 ---
 

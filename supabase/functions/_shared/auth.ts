@@ -26,6 +26,32 @@ export function adminClient(): SupabaseClient {
   )
 }
 
+/** Constant-time string comparison (length is not secret here: keys have fixed formats). */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
+}
+
+/**
+ * For operator-only functions (cron, CI): the bearer token must be exactly the
+ * project's service-role key (or the newer secret key). User JWTs, the anon key
+ * and anything else get 403 `forbidden`; a missing header gets 401.
+ */
+export function requireServiceRole(req: Request): void {
+  const header = req.headers.get('Authorization') ?? ''
+  const token = /^Bearer\s+(.+)$/i.exec(header)?.[1]?.trim()
+  if (!token) throw new AppError(401, 'unauthorized', 'Missing or malformed Authorization header')
+  const accepted = [
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
+    Deno.env.get('SUPABASE_SECRET_KEY'),
+  ].filter((key): key is string => typeof key === 'string' && key.length > 0)
+  if (!accepted.some((key) => timingSafeEqual(token, key))) {
+    throw new AppError(403, 'forbidden', 'This function is for operators only')
+  }
+}
+
 export interface AuthenticatedCaller {
   user: User
   /** Client scoped to the caller: RLS and `auth.uid()` apply as in the browser. */

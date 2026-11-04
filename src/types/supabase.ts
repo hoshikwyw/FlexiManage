@@ -23,7 +23,33 @@ export type Database = {
           }
         },"public": {
           Tables: {
-            "audit_events": {
+            "attachments": {
+                  Row: {
+                    "content_type": string,"created_at": string,"file_name": string,"id": string,"record_id": string,"size_bytes": number,"storage_path": string,"uploaded_by": string | null,"workspace_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "content_type": string,"created_at"?: string,"file_name": string,"id"?: string,"record_id": string,"size_bytes": number,"storage_path"?: never,"uploaded_by"?: string | null,"workspace_id": string
+                  }
+                  Update: {
+                    "content_type"?: string,"created_at"?: string,"file_name"?: string,"id"?: string,"record_id"?: string,"size_bytes"?: number,"storage_path"?: never,"uploaded_by"?: string | null,"workspace_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "attachments_record_workspace_fkey"
+      columns: ["record_id","workspace_id"]
+isOneToOne: false
+      referencedRelation: "records"
+      referencedColumns: ["id","workspace_id"]
+    },{
+      foreignKeyName: "attachments_workspace_id_fkey"
+      columns: ["workspace_id"]
+isOneToOne: false
+      referencedRelation: "workspaces"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"audit_events": {
                   Row: {
                     "action": string,"actor_id": string | null,"created_at": string,"entity_id": string | null,"entity_type": string,"id": number,"metadata": NonNullable<Json>,"workspace_id": string
                   }
@@ -161,6 +187,20 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"storage_deletion_queue": {
+                  Row: {
+                    "attempts": number,"bucket_id": string,"enqueued_at": string,"id": number,"last_attempt_at": string | null,"last_error": string | null,"object_name": string,"workspace_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "attempts"?: number,"bucket_id": string,"enqueued_at"?: string,"id"?: never,"last_attempt_at"?: string | null,"last_error"?: string | null,"object_name": string,"workspace_id": string
+                  }
+                  Update: {
+                    "attempts"?: number,"bucket_id"?: string,"enqueued_at"?: string,"id"?: never,"last_attempt_at"?: string | null,"last_error"?: string | null,"object_name"?: string,"workspace_id"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"workspace_members": {
                   Row: {
                     "created_at": string,"role": Database["public"]['Enums']["workspace_role"],"updated_at": string,"user_id": string,"workspace_id": string
@@ -206,6 +246,21 @@ isOneToOne: false
               "role": Database["public"]['Enums']["workspace_role"],"workspace_id": string,"workspace_name": string,"workspace_slug": string
             }[]
                            },
+"attachment_content_type_is_allowed":
+{ Args: { "p_content_type": string }; Returns: boolean
+                           },
+"attachment_file_name_is_valid":
+{ Args: { "p_file_name": string }; Returns: boolean
+                           },
+"can_delete_attachment_object":
+{ Args: { "p_name": string }; Returns: boolean
+                           },
+"can_read_attachment_object":
+{ Args: { "p_name": string }; Returns: boolean
+                           },
+"can_upload_attachment_object":
+{ Args: { "p_metadata": Json,"p_name": string }; Returns: boolean
+                           },
 "current_user_workspace_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
@@ -229,7 +284,7 @@ isOneToOne: false
                            },
 "workspace_usage":
 { Args: { "p_workspace_id": string }; Returns: {
-              "members": number,"modules": number,"records": number
+              "attachments": number,"members": number,"modules": number,"records": number,"storage_bytes": number
             }[]
                            }
           }

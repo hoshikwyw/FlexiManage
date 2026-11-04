@@ -8,6 +8,8 @@
 #   1. POST invite-member without Authorization            -> 401
 #   2. alice@example.com invites into a random workspace   -> 403 (not a member)
 #   3. alice@example.com accepts a garbage invitation token -> 404
+#   4. alice@example.com exports a module of a workspace she is not a member of -> 403
+#   5. alice@example.com exports the seed module Clients of Workspace A -> 200, text/csv
 #
 # `supabase start` normally serves the functions at <API_URL>/functions/v1/<name> through the
 # edge runtime container. If the probe shows the runtime is not answering (for example after a
@@ -77,6 +79,11 @@ status_of() {
     -H 'content-type: application/json' -H "@$2" --data "$3" || echo 000
 }
 
+# status_and_type <url> <header-file> <json-body>: print "<status> <content-type without parameters>".
+status_and_type() {
+  curl -s -o /dev/null -w '%{http_code} %{content_type}' --max-time 60 -X POST "$1"     -H 'content-type: application/json' -H "@$2" --data "$3" | sed -E 's/;.*$//' || echo 000
+}
+
 # --- Read the stack's URL and anon key without echoing them ------------------------------------
 STATUS_ENV=$("${SUPABASE[@]}" status -o env 2>/dev/null) || fail "supabase status failed; is the stack running?"
 API_URL=$(printf '%s\n' "$STATUS_ENV" | sed -nE 's/^API_URL="?([^"]*)"?$/\1/p' | head -n 1)
@@ -143,6 +150,13 @@ assert_status "invite-member into a workspace the caller is not a member of" 403
 ACCEPT_BODY=$(printf '{"token":"smoke-garbage-%s"}' "$(random_uuid)")
 assert_status "accept-invitation with an unknown token" 404 \
   "$(status_of "$FUNCTIONS_URL/accept-invitation" "$USER_HEADERS" "$ACCEPT_BODY")"
+
+EXPORT_FOREIGN_BODY=$(printf '{"workspaceId":"%s","moduleId":"%s"}' "$(random_uuid)" "$(random_uuid)")
+assert_status "export-records for a workspace the caller is not a member of" 403   "$(status_of "$FUNCTIONS_URL/export-records" "$USER_HEADERS" "$EXPORT_FOREIGN_BODY")"
+
+# Seed ids (supabase/seed.sql, tests/fixtures/ids.ts): Workspace A and its module Clients.
+EXPORT_BODY='{"workspaceId":"00000000-0000-0000-0000-0000000000aa","moduleId":"00000000-0000-0000-0000-0000000a0001"}'
+assert_status "export-records of the seed module Clients (status and content type)" "200 text/csv"   "$(status_and_type "$FUNCTIONS_URL/export-records" "$USER_HEADERS" "$EXPORT_BODY")"
 
 if [ "$FAILURES" -ne 0 ]; then
   fail "$FAILURES function smoke assertion(s) failed"

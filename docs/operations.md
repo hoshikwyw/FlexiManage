@@ -1,8 +1,8 @@
 # Operations
 
 Runtime and tooling notes for operators. Updated by the `devops-engineer` and `supabase-engineer`
-agents. Last updated: 2026-11-03 (migration 004: test files `13` to `18`, content fixture helpers,
-seed content).
+agents. Last updated: 2026-11-04 (migration 005: attachments bucket, deletion queue and purge
+procedure, test files `19` and `20`, `export-records` and `purge-attachments`).
 
 ## Production prerequisites
 
@@ -107,12 +107,14 @@ never collects it. `npm run db:reset` returns to the seed.
 
 Conventions (2026-11-03, Part 8b):
 
-- Files are numbered (`01_rls_enabled.sql` ... `18_search_and_usage.sql`; 18 files, 681 tests as
-  of migration 004) and each wraps everything in `begin; select plan(N); ... select * from
+- Files are numbered (`01_rls_enabled.sql` ... `20_storage_policies.sql`; 20 files, 850 tests as
+  of migration 005) and each wraps everything in `begin; select plan(N); ... select * from
   finish(); rollback;`, so a run leaves no data behind. `01` holds the structural totals (table
   count, function count, grants, policy names) and must be updated by every migration; `13` to
   `18` cover the content model (isolation of modules, fields and records, custom value
-  validation, role rules and audit, search and `workspace_usage`).
+  validation, role rules and audit, search and `workspace_usage`); `19` and `20` cover
+  attachments (table isolation, checks, cap, audit, deletion queue, usage) and the `attachments`
+  bucket's `storage.objects` policies.
 - The shared helpers live in `supabase/tests/helpers/tests_schema.sql.inc` and are pulled in with
   `\ir helpers/tests_schema.sql.inc` right after `select plan(N)` (psql resolves `\ir` relative to
   the including file, also inside the pg_prove container; the `.sql.inc` extension keeps pg_prove
@@ -127,7 +129,17 @@ Conventions (2026-11-03, Part 8b):
   `create_module(id, ws, slug[, created_by])`, `create_field(id, module, key, type[, required,
   options, settings, position, ws])`, `create_record(id, module, title[, values, created_by, ws,
   status])` (all run as the current role, so they go through RLS while impersonating),
-  `module_workspace(module)` and `values_of(record)` (security definer readers).
+  `module_workspace(module)` and `values_of(record)` (security definer readers). For attachments
+  (migration 005): `create_attachment(record, file_name[, uploaded_by, size, content_type, ws])`
+  returns the generated id (clients cannot supply `id`; keep it with `remember_text`),
+  `record_workspace(record)`, `path_of(attachment)`, `put_object(name[, metadata])` (inserts
+  into `storage.objects` as the current role, as storage-api does after an upload),
+  `object_meta(size[, mimetype])` and `allow_storage_delete()` (sets
+  `storage.allow_delete_query`, which storage-api sets before every delete).
+- Storage policies are tested in SQL, not over HTTP: impersonating `authenticated` and touching
+  `storage.objects` directly is exactly what storage-api does, so the policies are exercised
+  faithfully; no bytes are written. The HTTP path (upload, download, signed URL, 400 bodies) is
+  checked by hand with the curl recipe in "Attachments bucket" below.
 - Users are impersonated the way PostgREST does: `set local role authenticated` plus
   `set_config('request.jwt.claims', '{"sub": "<uuid>", "role": "authenticated"}', true)`. Extra
   users and memberships are inserted as `postgres` before impersonating.
@@ -156,8 +168,8 @@ Conventions (2026-11-03, Part 8b):
 ### Edge Functions
 
 `npm run functions:serve` needs the stack running. It starts the Docker edge runtime (Deno 2; no
-Deno install on the host is needed) and serves `invite-member` and `accept-invitation`, reloading
-on every file change. Stop it with Ctrl+C; the stack keeps running.
+Deno install on the host is needed) and serves `invite-member`, `accept-invitation`,
+`export-records` and `purge-attachments`, reloading on every file change. Stop it with Ctrl+C; the stack keeps running.
 
 - Environment: the CLI injects `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
   `SUPABASE_SERVICE_ROLE_KEY` (plus the newer `SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_SECRET_KEY`)
@@ -177,7 +189,11 @@ on every file change. Stop it with Ctrl+C; the stack keeps running.
   runtime is called directly (`http://supabase_edge_runtime_fleximanage:8081/<name>` from inside
   the Docker network). In production the function's headers apply; set `ALLOWED_ORIGIN`.
 - Tooling: `supabase/functions/**` is excluded from ESLint and from the Vite `tsconfig` (Deno
-  code with `npm:` specifiers); Prettier still formats it. Deploy with
+  code with `npm:` specifiers); Prettier still formats it. Unit tests for the pure CSV helpers:
+  `deno test supabase/functions/_shared/csv.test.ts`; without a local Deno, through Docker:
+  `docker run --rm -v "$PWD/supabase/functions:/fns:ro" -w /fns denoland/deno:2.1.4 test --no-lock _shared/csv.test.ts`
+  (on Git Bash prefix `MSYS_NO_PATHCONV=1`). Type-check like CI:
+  `deno check --config supabase/functions/deno.json supabase/functions/*/index.ts`. Deploy with
   `supabase functions deploy <name>` once a hosted project exists (Phase 5).
 
 Calling a function from a shell: obtain a JWT for a seed user with the password grant, then post
@@ -220,6 +236,46 @@ it never duplicates content; the fixed ids are listed in `docs/architecture.md`,
 `supabase/.temp` and `supabase/.branches` are ignored by git. Migrations are forward-only: never
 edit an applied file, add a new one and run `npm run db:reset`.
 
+## Attachments bucket
+
+Migration 005 creates the private Storage bucket `attachments` (10 MB per file, MIME allow-list
+png, jpeg, gif, webp, pdf, plain text, csv, docx, xlsx, pptx, zip). Hosted projects get it from
+the migration as well; nothing is configured in the dashboard. Objects live at
+`<workspace_id>/<record_id>/<attachment_id>-<file_name>` and are reachable only through the
+policies in `docs/architecture.md`, "Attachments". Locally the bytes are under
+`/mnt/stub/stub/attachments/` in the `supabase_storage_fleximanage` container;
+`npm run db:reset` empties `storage.objects` but not that directory (harmless; delete it with
+`docker exec supabase_storage_fleximanage rm -rf /mnt/stub/stub/attachments` when needed).
+
+Never delete from `storage.objects` in SQL: storage-api refuses it (`storage.protect_delete()`),
+and forcing it leaves the file in the backend. Deleted attachment rows (direct or by cascade from
+a record, module or workspace) are queued in `public.storage_deletion_queue` and removed by the
+Edge Function `purge-attachments`.
+
+Purge procedure (until the Phase 5 schedule exists; run after bulk deletes, and before a
+workspace's data is reported as erased):
+
+```sh
+# SERVICE from `npx supabase status -o env` (SERVICE_ROLE_KEY) locally, or from the secret store;
+# never echo it or put it in a file.
+curl -s -X POST "$API_URL/functions/v1/purge-attachments" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $SERVICE" -H "Content-Type: application/json" \
+  -d '{"limit":500}'                     # -> { "data": { "purged", "failed", "remaining" } }
+```
+
+Repeat while `remaining > 0`. Entries that failed 10 times are no longer retried; inspect them as
+`postgres` with `select object_name, attempts, last_error from public.storage_deletion_queue where
+attempts >= 10`, fix the cause and reset `attempts` to 0. Planned schedule (Phase 5): every 10
+minutes, either pg_cron + pg_net (`net.http_post` with the key from Vault) or a GitHub Actions
+cron with the key from repository secrets.
+
+Manual HTTP check of an upload (alice, local stack): insert the row through PostgREST
+(`POST /rest/v1/attachments` with `Prefer: return=representation` and `select=id,storage_path`),
+then `POST /storage/v1/object/attachments/<storage_path, each segment URL-encoded>` with
+`Content-Type` equal to the row's `content_type` and exactly `size_bytes` bytes; download with
+`GET /storage/v1/object/authenticated/attachments/<path>`. Policy denials come back as HTTP 400
+with `statusCode` 403 or 404 in the JSON body.
+
 ## CI
 
 `.github/workflows/ci.yml` has two independent jobs on `ubuntu-latest`. Actions are pinned to major
@@ -237,7 +293,9 @@ is enabled and concurrency cancels superseded runs on the same ref.
   `scripts/ci/functions-smoke.sh`, which reads the API URL and anon key from
   `supabase status -o env` (never printed), signs in as `alice@example.com` with the password
   grant and asserts status codes only: no credentials 401, invite into a foreign workspace 403,
-  unknown invitation token 404. If the edge runtime is not answering it starts
+  unknown invitation token 404, `export-records` into a foreign workspace 403, and
+  `export-records` of the seed module Clients 200 with `text/csv` (each run writes one
+  `records.exported` audit row in Workspace A). If the edge runtime is not answering it starts
   `supabase functions serve` itself and stops it afterwards. Run it locally with
   `bash scripts/ci/functions-smoke.sh` (needs curl, and jq or node).
 

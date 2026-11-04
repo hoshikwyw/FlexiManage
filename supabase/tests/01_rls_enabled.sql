@@ -1,4 +1,4 @@
--- 01: structural guarantees of migrations 001 to 004.
+-- 01: structural guarantees of migrations 001 to 005.
 --   * every table in public has row level security enabled
 --   * anon has no privilege on any public table; authenticated has exactly the
 --     table and column grants documented in docs/architecture.md (migration 003
@@ -7,6 +7,9 @@
 --   * migration 004 adds modules, field_definitions and records with
 --     column-level insert/update grants (no search_vector, created_at,
 --     updated_at; workspace_id and module_id not updatable)
+--   * migration 005 adds attachments (select/delete at table level, insert
+--     column-level on workspace_id, record_id, file_name, content_type,
+--     size_bytes; no update) and storage_deletion_queue (nothing for API roles)
 --   * the policy set per table matches the documented names
 --   * RLS helpers (and workspace_usage) are security definer, stable, have a
 --     fixed search_path and are executable by authenticated only; trigger
@@ -18,7 +21,7 @@
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(159);
+select plan(214);
 
 -- ---------------------------------------------------------------------------
 -- Row level security
@@ -31,8 +34,8 @@ select is(
 
 select is(
   (select count(*)::int from pg_tables where schemaname = 'public'),
-  8,
-  'migrations 001 to 004 create exactly eight tables in public'
+  10,
+  'migrations 001 to 005 create exactly ten tables in public'
 );
 
 select ok(
@@ -42,7 +45,7 @@ select ok(
   format('rls is enabled on public.%s', t)
 )
 from unnest(array['profiles', 'workspaces', 'workspace_members', 'invitations', 'audit_events',
-                  'modules', 'field_definitions', 'records']) t;
+                  'modules', 'field_definitions', 'records', 'attachments', 'storage_deletion_queue']) t;
 
 select has_enum('public', 'field_type', 'enum public.field_type exists');
 select enum_has_labels('public', 'field_type', array['text', 'number', 'date', 'select', 'checkbox', 'currency'],
@@ -53,7 +56,7 @@ select enum_has_labels('public', 'field_type', array['text', 'number', 'date', '
 -- ---------------------------------------------------------------------------
 select table_privs_are('public', t, 'anon', '{}'::text[], format('anon has no privilege on public.%s', t))
 from unnest(array['profiles', 'workspaces', 'workspace_members', 'invitations', 'audit_events',
-                  'modules', 'field_definitions', 'records']) t;
+                  'modules', 'field_definitions', 'records', 'attachments', 'storage_deletion_queue']) t;
 
 -- has_table_privilege ignores column-level grants, so UPDATE is absent here
 -- and asserted per column below.
@@ -72,6 +75,11 @@ select table_privs_are('public', 'audit_events', 'authenticated', array['SELECT'
 select table_privs_are('public', t, 'authenticated', array['SELECT', 'DELETE'],
   format('authenticated may select and delete %s at table level (insert/update are column-level)', t))
 from unnest(array['modules', 'field_definitions', 'records']) t;
+-- Migration 005.
+select table_privs_are('public', 'attachments', 'authenticated', array['SELECT', 'DELETE'],
+  'authenticated may select and delete attachments at table level (insert is column-level, no update)');
+select table_privs_are('public', 'storage_deletion_queue', 'authenticated', '{}'::text[],
+  'authenticated has no privilege on storage_deletion_queue');
 
 -- Column-level update grants (has_column_privilege also reports table-level
 -- SELECT/INSERT, so those appear in the expected lists).
@@ -130,6 +138,13 @@ select column_privs_are('public', 'records', 'custom_values', 'authenticated', a
   'authenticated may insert and update records.custom_values');
 select column_privs_are('public', 'records', 'created_by', 'authenticated', array['SELECT', 'INSERT'],
   'authenticated may insert but not update records.created_by');
+-- Migration 005 attachments: insert only on the five client columns, update never.
+select column_privs_are('public', 'attachments', c, 'authenticated', array['SELECT', 'INSERT'],
+  format('authenticated may insert but not update attachments.%s', c))
+from unnest(array['workspace_id', 'record_id', 'file_name', 'content_type', 'size_bytes']) c;
+select column_privs_are('public', 'attachments', c, 'authenticated', array['SELECT'],
+  format('authenticated may only read attachments.%s', c))
+from unnest(array['id', 'storage_path', 'uploaded_by', 'created_at']) c;
 
 -- ---------------------------------------------------------------------------
 -- Policies: one per command, named <table>_<command>_<who>
@@ -164,6 +179,12 @@ select policies_are('public', 'records',
   array['records_select_member', 'records_insert_member',
         'records_update_member', 'records_delete_member'],
   'records has exactly the documented policies');
+select policies_are('public', 'attachments',
+  array['attachments_select_member', 'attachments_insert_member',
+        'attachments_delete_uploader_or_owner_admin'],
+  'attachments has exactly the documented policies (no update policy)');
+select policies_are('public', 'storage_deletion_queue', '{}'::name[],
+  'storage_deletion_queue has no policy (service role only)');
 
 -- Every policy is scoped to authenticated, never to public or anon.
 select is(
@@ -182,7 +203,10 @@ insert into helper_fn values
   ('has_workspace_role', array['uuid', 'public.workspace_role[]']),
   ('current_user_workspace_ids', '{}'::text[]),
   ('shares_workspace_with', array['uuid']),
-  ('workspace_usage', array['uuid']);
+  ('workspace_usage', array['uuid']),
+  ('can_read_attachment_object', array['text']),
+  ('can_upload_attachment_object', array['text', 'jsonb']),
+  ('can_delete_attachment_object', array['text']);
 
 select is_definer('public', fname, fargs, format('%s is security definer', fname)) from helper_fn;
 select volatility_is('public', fname, fargs, 'stable', format('%s is stable', fname)) from helper_fn;
@@ -202,7 +226,9 @@ create temp table pure_fn (fname text, fargs text[]) on commit drop;
 insert into pure_fn values
   ('jsonb_values_text', array['jsonb']),
   ('field_options_are_valid', array['public.field_type', 'jsonb']),
-  ('field_settings_are_valid', array['public.field_type', 'jsonb']);
+  ('field_settings_are_valid', array['public.field_type', 'jsonb']),
+  ('attachment_content_type_is_allowed', array['text']),
+  ('attachment_file_name_is_valid', array['text']);
 
 select volatility_is('public', fname, fargs, 'immutable', format('%s is immutable', fname)) from pure_fn;
 select isnt_definer('public', fname, fargs, format('%s is not security definer', fname)) from pure_fn;
@@ -226,7 +252,10 @@ insert into trigger_fn values
   ('protect_field_definition', true),
   ('handle_field_deleted', true),
   ('audit_module_change', true),
-  ('audit_field_change', true);
+  ('audit_field_change', true),
+  ('enforce_attachment_cap', true),
+  ('audit_attachment_change', true),
+  ('enqueue_attachment_object_deletion', true);
 
 select is_definer('public', fname, '{}'::text[], format('%s is security definer', fname))
 from trigger_fn where definer;
@@ -246,8 +275,8 @@ order by p.proname;
 
 select is(
   (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace),
-  22,
-  'migrations 001 to 004 define exactly twenty-two functions in public'
+  30,
+  'migrations 001 to 005 define exactly thirty functions in public'
 );
 
 select * from finish();

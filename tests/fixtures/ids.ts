@@ -122,3 +122,12 @@ export type SeedWorkspaceKey = keyof typeof SEED_WORKSPACES
 export type SeedModuleKey = keyof typeof SEED_MODULES
 export type SeedFieldKey = keyof typeof SEED_FIELDS
 export type SeedRecordKey = keyof typeof SEED_RECORDS
+
+/**
+ * Storage (migration 005). The private bucket holds attachment objects at
+ * `<workspace_id>/<record_id>/<attachment_id>-<file_name>`. The seed creates no
+ * attachments.
+ */
+export const STORAGE_BUCKETS = {
+  attachments: 'attachments',
+} as const

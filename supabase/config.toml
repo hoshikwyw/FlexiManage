@@ -430,3 +430,16 @@ enabled = true
 verify_jwt = true
 import_map = "./functions/deno.json"
 entrypoint = "./functions/accept-invitation/index.ts"
+
+[functions.export-records]
+enabled = true
+verify_jwt = true
+import_map = "./functions/deno.json"
+entrypoint = "./functions/export-records/index.ts"
+
+# Operators only: the function itself requires the service-role key as bearer token.
+[functions.purge-attachments]
+enabled = true
+verify_jwt = true
+import_map = "./functions/deno.json"
+entrypoint = "./functions/purge-attachments/index.ts"

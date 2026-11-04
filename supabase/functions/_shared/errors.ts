@@ -12,6 +12,7 @@ export type ErrorCode =
   | 'validation_error'
   | 'conflict'
   | 'invitation_expired'
+  | 'export_too_large'
   | 'method_not_allowed'
   | 'internal'
 
