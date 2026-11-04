@@ -11,7 +11,10 @@ import { recordKeys } from './keys'
  * without an error, so the hook asks for the deleted id and throws
  * `RecordNotFoundError` when nothing came back. The detail query is removed
  * (not refetched) so the page can navigate away without flashing "not found".
- * Part 13 adds the attachment rows and storage objects to the same path.
+ * Attachments go with it: their rows cascade (composite FK) and the
+ * `enqueue_attachment_object_deletion` trigger queues every storage object for
+ * `purge-attachments`; the client does not remove objects here, because a
+ * member may delete a record holding files they could not remove themselves.
  */
 export function useDeleteRecord(workspaceId: string, moduleId: string) {
   const queryClient = useQueryClient()

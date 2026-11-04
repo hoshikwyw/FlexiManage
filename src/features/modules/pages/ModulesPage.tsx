@@ -9,6 +9,7 @@ import { useModules } from '../api/use-modules'
 import { CreateModuleDialog } from '../components/CreateModuleDialog'
 import { ModulesList, ModulesListSkeleton } from '../components/ModulesList'
 import { ModuleUsageBadge } from '../components/ModuleUsageBadge'
+import { StorageUsageBadge } from '../components/StorageUsageBadge'
 import { canManageModules } from '../lib/module-permissions'
 import { BLANK_TEMPLATE_ID, DEFAULT_TEMPLATE_ID } from '../lib/templates'
 
@@ -29,10 +30,11 @@ export function ModulesPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight">
-            Modules
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">Modules</h1>
             <ModuleUsageBadge workspaceId={workspace.id} />
-          </h1>
+            <StorageUsageBadge workspaceId={workspace.id} />
+          </div>
           <p className="text-muted-foreground text-sm">
             What {workspace.name} keeps track of: each module has its own fields and records.
           </p>

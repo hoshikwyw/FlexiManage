@@ -115,3 +115,43 @@ describe('RecordsTab', () => {
     expect(toggle.textContent?.replace(/\s+/g, ' ').trim()).toBe('Filters1 active')
   })
 })
+
+describe('RecordsTab export button', () => {
+  beforeEach(() => {
+    vi.mocked(useFieldDefinitions).mockReturnValue({
+      data: createClientsFields(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useFieldDefinitions>)
+  })
+
+  function renderWithRole(role: 'owner' | 'admin' | 'member' | null) {
+    return renderWithProviders(
+      <RecordsTab
+        workspaceId={TEST_WORKSPACE_ID}
+        moduleId={TEST_MODULE_ID}
+        moduleSlug="clients"
+        role={role}
+      />,
+      { initialEntries: [`/w/${TEST_WORKSPACE_ID}/modules/${TEST_MODULE_ID}`] },
+    )
+  }
+
+  it('is hidden from members and when no role is passed', () => {
+    mockRecords({ rows: [], total: 3 })
+    renderWithRole('member')
+    expect(screen.queryByRole('button', { name: 'Export CSV' })).not.toBeInTheDocument()
+  })
+
+  it('is disabled for an owner while the table shows zero rows', () => {
+    mockRecords({ rows: [], total: 0 })
+    renderWithRole('owner')
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeDisabled()
+  })
+
+  it('is enabled for an admin when rows match', () => {
+    mockRecords({ rows: [], total: 3, outOfRange: true })
+    renderWithRole('admin')
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeEnabled()
+  })
+})

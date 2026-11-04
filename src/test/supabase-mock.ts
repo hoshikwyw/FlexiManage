@@ -20,11 +20,26 @@ export function createSupabaseMock() {
       exchangeCodeForSession: vi.fn(),
     },
     from: vi.fn(),
+    rpc: vi.fn(),
     functions: {
       invoke: vi.fn(),
     },
+    storage: {
+      from: vi.fn(),
+    },
   }
 }
+
+/** Stand-in for `supabase.storage.from(bucket)`; return it from `storage.from`. */
+export function createStorageBucketMock() {
+  return {
+    upload: vi.fn().mockResolvedValue({ data: { path: '' }, error: null }),
+    remove: vi.fn().mockResolvedValue({ data: [], error: null }),
+    createSignedUrl: vi.fn().mockResolvedValue({ data: { signedUrl: '' }, error: null }),
+  }
+}
+
+export type StorageBucketMock = ReturnType<typeof createStorageBucketMock>
 
 export type SupabaseMock = ReturnType<typeof createSupabaseMock>
 

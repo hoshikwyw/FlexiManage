@@ -1,11 +1,12 @@
-import { PaperclipIcon, PencilIcon, Trash2Icon, TriangleAlertIcon } from 'lucide-react'
+import { PencilIcon, Trash2Icon, TriangleAlertIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { AttachmentsSection } from '@/features/attachments/components/AttachmentsSection'
 import { formatFieldValue } from '@/features/records/fields/registry'
 import { formatDateTime } from '@/lib/format'
-import type { FieldDefinition } from '@/types/database'
+import type { FieldDefinition, WorkspaceRole } from '@/types/database'
 
 import { readCustomValues } from '../lib/record-values'
 import { missingRequiredFields } from '../schemas/record'
@@ -18,12 +19,15 @@ interface RecordDetailProps {
   /** Display name of the creator ("you", a member name or "Someone"). */
   createdByName: string
   onDelete: () => void
+  /** For the attachments section: who may delete which file (UI only). */
+  currentUserId: string | null
+  role: WorkspaceRole | null
 }
 
 /**
  * Read view of a record: every field in module order formatted by the
  * registry, the free-text status, created/updated meta, edit and delete
- * actions, and the attachments section (Part 13/14). Required fields added
+ * actions, and the attachments section (story B4). Required fields added
  * after the record was created are called out so the user fills them.
  */
 export function RecordDetail({
@@ -32,6 +36,8 @@ export function RecordDetail({
   editHref,
   createdByName,
   onDelete,
+  currentUserId,
+  role,
 }: RecordDetailProps) {
   const values = readCustomValues(record.custom_values)
   const missing = missingRequiredFields(record, fields)
@@ -92,16 +98,12 @@ export function RecordDetail({
         </CardContent>
       </Card>
 
-      <section aria-labelledby="record-attachments" className="flex flex-col gap-2">
-        <h2 id="record-attachments" className="flex items-center gap-2 text-lg font-semibold">
-          <PaperclipIcon className="size-4" aria-hidden="true" />
-          Attachments
-        </h2>
-        {/* Part 13/14: attachment list, upload and download (storage bucket `attachments`). */}
-        <p className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm">
-          Attachments are coming in a later release.
-        </p>
-      </section>
+      <AttachmentsSection
+        workspaceId={record.workspace_id}
+        recordId={record.id}
+        currentUserId={currentUserId}
+        role={role}
+      />
     </div>
   )
 }

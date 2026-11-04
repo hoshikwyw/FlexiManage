@@ -49,7 +49,10 @@ function NewRecord({ workspaceId, module, fields }: RecordPageContext) {
           onSubmit={async (values) => {
             const record = await createRecord.mutateAsync(toRecordPayload(values))
             toast.success(`Record "${record.title}" created`)
-            void navigate(moduleHref)
+            // The record page has the Attachments section; files need a saved record.
+            void navigate(WORKSPACE_ROUTES.record(workspaceId, module.id, record.id), {
+              replace: true,
+            })
           }}
           onCancel={() => void navigate(moduleHref)}
           onFieldsStale={() =>

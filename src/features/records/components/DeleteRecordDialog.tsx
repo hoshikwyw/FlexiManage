@@ -59,8 +59,8 @@ export function DeleteRecordDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {record?.title ?? 'this record'}?</AlertDialogTitle>
           <AlertDialogDescription>
-            The record and its values are removed for everyone in this workspace. This cannot be
-            undone.
+            The record, its values and its attachments are removed for everyone in this workspace.
+            This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <FormServerError

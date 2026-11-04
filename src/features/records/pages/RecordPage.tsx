@@ -8,6 +8,7 @@ import { useSession } from '@/features/auth/api/use-session'
 import { useMembers } from '@/features/members/api/use-members'
 import { moduleKeys } from '@/features/modules/api/keys'
 import { getDisplayName } from '@/features/profile/lib/display-name'
+import { useCurrentWorkspace } from '@/features/workspaces/context/workspace-context'
 import { WORKSPACE_ROUTES } from '@/features/workspaces/lib/workspace-routes'
 
 import { useRecord } from '../api/use-record'
@@ -100,6 +101,7 @@ function ReadRecord({
   onDeleted,
 }: RecordPageContext & { record: RecordItem; editHref: string; onDeleted: () => void }) {
   const { user } = useSession()
+  const { role } = useCurrentWorkspace()
   const members = useMembers(workspaceId)
   const [deleting, setDeleting] = useState(false)
   const creator = members.data?.find((member) => member.user_id === record.created_by)
@@ -118,6 +120,8 @@ function ReadRecord({
         editHref={editHref}
         createdByName={createdByName}
         onDelete={() => setDeleting(true)}
+        currentUserId={user?.id ?? null}
+        role={role}
       />
       <DeleteRecordDialog
         workspaceId={workspaceId}

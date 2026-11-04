@@ -529,8 +529,8 @@ replace`d); the argument list and the first three columns are unchanged, so exis
 working. `storage_bytes` counts declared sizes, which equal the stored sizes for every uploaded
 object (the upload policy requires it); a row whose upload never happened still counts until it is
 deleted. Frontend type contract: `WorkspaceUsageRow` in `src/types/database.ts` is the full
-row; `WorkspaceUsage` is pinned to `modules, records, members` until Part 14 moves the usage
-hook to `WorkspaceUsageRow`. A caller who is not a member of the
+row; since Part 14 (2026-11-04) `useWorkspaceUsage` returns it and the pinned
+`WorkspaceUsage` alias is gone. A caller who is not a member of the
 workspace (including an unknown id, so existence is not revealed, and a call without a JWT) gets
 SQLSTATE `42501` `not a member of this workspace`; `anon` gets `42501 permission denied for
 function workspace_usage`. Through PostgREST: `supabase.rpc('workspace_usage', { p_workspace_id })`
@@ -881,7 +881,8 @@ authentication screens, the protected routing and the app shell; Part 6 (2026-10
 workspaces and members features, the workspace context and the workspace-scoped route map,
 completing Phase 2. Part 11 (2026-11-04) added the field-type registry and the modules feature
 (list, templates, module page with a Fields tab, settings); Part 12 (2026-11-04) added the records
-list (search, filters, sort, pagination in the URL), the record form and the record pages.
+list (search, filters, sort, pagination in the URL), the record form and the record pages; Part 14
+(2026-11-04) added attachments on the record page, "Export CSV" and the storage usage badge.
 
 ### Feature layout
 
@@ -954,6 +955,23 @@ src/features/members/
   pages/               MembersPage, AcceptInvitationPage
   types.ts             Member (row + profile), FunctionErrorCode, InviteMemberResult,
                        AcceptInvitationResult
+src/features/attachments/
+  lib/                 attachment-rules.ts (ALLOWED_CONTENT_TYPES = the 11 types of migration 005,
+                       MAX_ATTACHMENT_BYTES 10 MB, MAX_ATTACHMENTS_PER_RECORD 10,
+                       EXTENSION_CONTENT_TYPES, ACCEPT_ATTRIBUTE, resolveContentType,
+                       sanitiseFileName, validateFile -> too_large | empty | type_not_allowed |
+                       too_many), storage-errors.ts (AttachmentError { code }, mapStorageError,
+                       mapAttachmentRowError, getAttachmentErrorMessage), attachment-permissions.ts
+                       (canDeleteAttachment: uploader or owner/admin), uploader-name.ts, file-icons.ts
+  api/                 keys.ts (['attachments', ws, recordId]); attachment-queries.ts
+                       (ATTACHMENT_COLUMNS, fetchAttachments + profiles); attachment-writes.ts
+                       (uploadAttachment, downloadAttachment, deleteAttachment: the raw sequences, no
+                       React); useAttachments, useUploadAttachment (batch + per-file progress),
+                       useDownloadAttachment, useDeleteAttachment; invalidate.ts (list + ['usage', ws])
+  components/          AttachmentsSection (mounted by RecordDetail), AttachmentList (+ skeleton),
+                       AttachmentDropzone, UploadProgressList, DeleteAttachmentDialog,
+                       AttachmentFileIcon
+  types.ts             AttachmentRow, AttachmentItem (row + uploader profile), UploadProgress
 src/features/records/
   fields/              The field-type registry (section below): types.ts (FieldTypeDefinition,
                        FieldInputProps), registry.ts (FIELD_TYPE_REGISTRY, getFieldTypeDefinition,
@@ -971,12 +989,16 @@ src/features/records/
                        structural builder: search, filters, sort; buildPrefixTsQuery, escapeLike),
                        record-values.ts (compactCustomValues, diffRecordPayload), record-errors.ts
                        (getRecordErrorMessage, mapRecordSaveError, RecordNotFoundError),
-                       filter-labels.ts (chip text), pagination.ts (describePageRange, lastPage)
+                       filter-labels.ts (chip text), pagination.ts (describePageRange, lastPage),
+                       export-records.ts (canExportRecords, buildExportBody,
+                       parseContentDispositionFileName, fallbackExportFileName, ExportError,
+                       exportErrorFromResponse)
   api/                 keys.ts (['records', ws, moduleId, 'list', query], [..., 'detail', id],
                        ['records', ws, 'counts']); record-queries.ts (fetchRecords, countRecords,
                        fetchRecord, fetchRecordCounts, RECORD_COLUMNS); useRecords, useRecord,
                        useRecordCounts, useCreateRecord, useUpdateRecord, useDeleteRecord,
-                       invalidate.ts (lists + counts + ['usage', ws])
+                       invalidate.ts (lists + counts + ['usage', ws]), use-export-records.ts
+                       (exportRecords: raw fetch to export-records, useExportRecords)
   schemas/record.ts    buildRecordFormSchema(fields) (title 1..200, status <= 50, custom_values =
                        buildRecordSchema), emptyRecordFormValues, recordToFormValues,
                        toRecordPayload, missingRequiredFields
@@ -985,7 +1007,7 @@ src/features/records/
                        registry filterKind: Text, Options, Boolean, NumberRange, DateRange),
                        RecordsTable, RecordsTableStates (skeleton, error, "No records yet",
                        "No records match"), RecordsPagination, RecordForm, DiscardChangesDialog,
-                       RecordDetail, DeleteRecordDialog
+                       RecordDetail (+ AttachmentsSection), DeleteRecordDialog, ExportCsvButton
   pages/               NewRecordPage, RecordPage (read / ?edit=1, RecordNotFound), RecordPageShell
                        (module + fields loading, breadcrumb)
   types.ts             RecordItem, RecordsQuery, RecordFilter, RecordSort, PageSize, RecordsPage
@@ -1002,7 +1024,8 @@ src/features/modules/
                        useUpdateField (label, required, options, settings only: never key or
                        type), useDeleteField (also invalidates ['records', ws, moduleId]),
                        useReorderFields (moveField + one position update per changed row,
-                       optimistic), useWorkspaceUsage(ws) (rpc workspace_usage)
+                       optimistic), useWorkspaceUsage(ws) (rpc workspace_usage -> WorkspaceUsageRow,
+                       EMPTY_WORKSPACE_USAGE fallback)
   schemas/             module.ts (name 1..100, slug as workspaces, description <= 500, icon from
                        MODULE_ICONS or '', templateId), field.ts (label 1..100, key
                        ^[a-z][a-z0-9_]{0,49}$, type from FIELD_TYPES, required, options 1..100
@@ -1019,7 +1042,8 @@ src/features/modules/
                        templates.ts (section below)
   components/          ModulesList (+ empty state, skeleton), ModuleCard (field and record
                        counts), ModuleIcon,
-                       ModuleUsageBadge, ModulesOverview (dashboard card), CreateModuleDialog,
+                       ModuleUsageBadge, StorageUsageBadge ("12.3 MB used"), ModulesOverview (dashboard
+                       card), CreateModuleDialog,
                        CreateModuleForm, TemplatePicker, ModuleSettingsForm, DeleteModuleDialog
                        (+ ModuleDangerZone), FieldsTab, FieldList (+ skeleton), FieldTypeBadge,
                        FieldDialog, FieldForm, SelectOptionsEditor, CurrencySettingsFields,
@@ -1033,15 +1057,19 @@ src/components/ui/     shadcn/ui (button, card, input, label, field, dropdown-me
                        separator, sheet, sonner, skeleton, dialog, alert-dialog, badge, table,
                        native-select, checkbox, textarea, tabs)
 src/lib/supabase.ts    createClient<Database>(anon key, PKCE, detectSessionInUrl: false)
-src/lib/               format.ts (formatDate/formatDateTime for timestamps; parseIsoDate and
+src/lib/               download.ts (triggerDownload via a temporary anchor, saveBlob via an object
+                       URL revoked on the next tick), format.ts (formatBytes, 1024-based: "10 MB" =
+                       10,485,760 bytes; formatDate/formatDateTime for timestamps; parseIsoDate and
                        formatDateOnly for `YYYY-MM-DD` values, parsed as local calendar dates so
                        they never shift by a day), postgrest-errors.ts (isPostgrestError,
                        isNetworkError), workspace-roles.ts (getRoleLabel)
 src/types/database.ts  Row aliases: Profile, Workspace, WorkspaceMember, Invitation, AuditEvent,
                        WorkspaceRole, WORKSPACE_ROLES; migration 004: Module, FieldDefinition,
                        RecordRow (+ Insert/Update), FieldType, FIELD_TYPES, SelectOption,
-                       FieldSettings, WorkspaceUsage
-src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts (auth, from,
+                       FieldSettings, WorkspaceUsageRow; migration 005: Attachment,
+                       AttachmentInsert (the five insertable columns)
+src/test/              render.tsx (providers + MemoryRouter), supabase-mock.ts (auth, from, rpc,
+                       storage.from, createStorageBucketMock,
                        functions.invoke), workspace-context.tsx (stubbed WorkspaceProvider value),
                        fields.ts (createTestField, createTestModule, createClientsFields),
                        query-builder-mock.ts (chainable PostgREST builder that records calls),
@@ -1328,9 +1356,107 @@ shows an explanation and no submit button on "New record" (B2).
 the first field's value; the free-text core `status` is labelled "Record status" in the form so it
 is not confused with a custom field named Status.
 
-**Slots for Parts 13-14:** `RecordDetail` has an "Attachments" section placeholder,
-`RecordForm` a commented upload slot, `RecordsTab` a commented "Export CSV" slot next to "New
-record", and `useDeleteRecord` is where attachment rows and storage objects join the delete.
+**Delete and attachments:** `useDeleteRecord` deletes only the row. The attachment rows cascade
+and `enqueue_attachment_object_deletion` queues every object for `purge-attachments`; the client
+does not remove the objects first, because any member may delete a record while only the
+uploader or an owner/admin may remove each file. The delete dialog says attachments go too.
+
+**Create lands on the record:** since Part 14 `NewRecordPage` navigates (replace) to the new
+record's page instead of the list, where the Attachments section is; uploads need a saved record,
+so `RecordForm` has none.
+
+**Export CSV (story B5):** `ExportCsvButton` sits next to "New record", rendered only when
+`canExportRecords(role)` (owner, admin; the function answers members 403 anyway) and disabled
+while the list loads or shows zero rows (`total === 0`). `exportRecords` (`api/use-export-records.ts`)
+uses a raw `fetch`, not `functions.invoke`, because it needs the response headers and the raw
+bytes: `POST ${supabaseUrl}/functions/v1/export-records` with `Authorization: Bearer <access token
+from supabase.auth.getSession()>`, `apikey: <anon key>` and the body `buildExportBody(workspaceId,
+moduleId, query)` = `{ workspaceId, moduleId, search?, filters? }` (trimmed search and the
+`RecordFilter[]` of the URL state, each omitted when empty; sort and page are ignored). On 200 the
+blob is saved through an object URL under the `Content-Disposition` name (`filename*=UTF-8''...`
+wins over `filename="..."` and a bare `filename=`; path separators and control characters
+become `_`), falling back to `<slug>-<UTC YYYY-MM-DD>.csv`. Errors: the envelope's
+`error.code` (`forbidden`, `export_too_large`, `validation_error`, `unauthorized`,
+`internal`), else the HTTP status (401 from the edge runtime, 413), a failed fetch is
+`network`, no session is `unauthorized` without a request. `export_too_large` reads "More than
+50,000 records match. Narrow the search or filters and try again." Success and errors are toasts
+(sonner's live region); the response has no row count, so the toast says "Export downloaded".
+Local note: the functions' CORS allow-list is `ALLOWED_ORIGIN` (`supabase/functions/.env`,
+default `http://localhost:5173`), so open the dev app on `localhost`, not `127.0.0.1`, to export.
+
+### Attachments feature (`src/features/attachments/`)
+
+Any member lists, uploads and downloads (RLS `attachments_select_member`,
+`attachments_insert_member`, the storage policies); the delete action is shown to the uploader and
+to owners and admins (`canDeleteAttachment`), and the row and storage policies decide. Mounted
+by `RecordDetail` as `AttachmentsSection` (heading, "n of 10", list, upload progress, dropzone).
+
+**Local rules first** (`lib/attachment-rules.ts`, mirrors of migration 005; the server enforces
+them again): `validateFile(file, existingCount)` checks the cap (existing count plus files
+accepted earlier in the same batch), empty files, the 10 MB limit and the type, in that order.
+The type is `resolveContentType`: the browser's `File.type` without parameters when it is on the
+list, otherwise the extension's type (Windows reports `.csv` as `application/vnd.ms-excel` and
+`.zip` as `application/x-zip-compressed`; some files have no type), otherwise refused.
+`sanitiseFileName` keeps the last path segment, folds accents (NFKD, marks dropped), replaces each
+run of characters outside `[A-Za-z0-9 !._*'()&$@=;:+,?-]` with `_`, collapses whitespace, keeps an
+alphanumeric extension of at most 16 characters while truncating to 255, trims, and falls back to
+`file` (`報告書.pdf` -> `file.pdf`); dotfiles stay as they are. `AttachmentDropzone` runs
+`validateFile` per file and shows one inline message per rejected file in an `role="alert"`
+region; only the accepted files go on. The "Choose files" button is the keyboard path (the
+`<input type="file" multiple accept={ACCEPT_ATTRIBUTE}>` is visually hidden); drag and drop
+targets the same handler. Both are disabled at 10 files and while a batch runs.
+
+**Upload sequence** (`uploadAttachment`, one file):
+
+1. `validateFile` (throws `AttachmentError`, no request);
+2. `from('attachments').insert({ workspace_id, record_id, file_name, content_type, size_bytes })
+   .select(ATTACHMENT_COLUMNS).single()`: the generated `storage_path` comes back; a failure
+   (23514 cap/size/type/name, 23503, 42501) uploads nothing;
+3. `storage.from('attachments').upload(storage_path, body, { contentType, upsert: false })`.
+   storage-js sends a `File`/`Blob` as multipart form data whose part type is the Blob's own
+   type and ignores `contentType`, so when `File.type` differs from the resolved type the bytes
+   are re-wrapped as `new Blob([file], { type: contentType })`; otherwise the storage insert policy
+   (MIME must equal the row's `content_type`) would refuse the upload;
+4. on an upload error (returned or thrown) the row is deleted by `workspace_id` and `id` (best
+   effort; a failed rollback leaves a row without an object, the Phase 5 sweep) and the mapped error
+   is thrown.
+
+`useUploadAttachment(ws, recordId)` runs a batch sequentially through a `useMutation` over
+`uploadAttachment`, passing the growing count, and keeps a local progress list per file
+(`queued` -> `uploading` -> removed on success, or `error` with the message until dismissed or the
+next batch). supabase-js `upload` reports no byte progress, so "uploading" is an indeterminate
+spinner. Each success invalidates `['attachments', ws, recordId]` and `['usage', ws]`; a polite
+live region announces "2 files uploaded." or "1 uploaded, 1 failed.".
+
+**Download:** `createSignedUrl(storage_path, 60, { download: file_name })`, then a temporary
+anchor is clicked (`triggerDownload`). The `download` option makes Storage answer with
+`Content-Disposition: attachment`, so the browser saves under the original name and the app does
+not navigate (the anchor's own `download` attribute is ignored cross-origin). Errors are toasts.
+
+**Delete** (`deleteAttachment`, B4 order): `storage.remove([storage_path])` first (the object is
+only visible to the policy while its row exists), then
+`from('attachments').delete().eq('workspace_id').eq('id').select('id')`. `remove` answers `[]`
+without an error when the policy hides the object or it was never uploaded, so the row delete
+decides: zero rows -> `AttachmentError('forbidden')` ("Only the uploader or an owner or admin can
+remove this file, or it was already removed."). A Storage error stops before the row delete. The
+row delete fires the queue trigger as well, so every UI delete adds one `storage_deletion_queue`
+entry for an object that is already gone (verified 2026-11-04: queue 0 -> 1 per delete;
+`purge-attachments` then answered `{ purged: 2, failed: 0, remaining: 0 }` for two such entries).
+`useDeleteAttachment` invalidates the list and usage on settle (also after a half-done delete).
+`DeleteAttachmentDialog` keeps failures in the dialog (`FormServerError`).
+
+**Errors** (`lib/storage-errors.ts`): Storage answers policy denials with HTTP 400 and the logical
+status in the body; storage-js copies the body's `statusCode` onto `StorageApiError`, which wins
+over the HTTP status: 403 -> `forbidden`, 404 -> `not_found`, 409 -> `already_exists`, 413 ->
+`too_large`, 415 -> `type_not_allowed`; a `StorageUnknownError` wrapping a fetch `TypeError` ->
+`network`; anything else `unknown`. Row errors: 42501 -> `forbidden`, 23503/PGRST116 ->
+`not_found`, 23514 by message (`at most 10 files`, `size_bytes`, `content_type`, else the name).
+
+**Usage display:** `useWorkspaceUsage` returns the full `WorkspaceUsageRow` (fallback
+`EMPTY_WORKSPACE_USAGE`, all zeros). The Modules page header shows `ModuleUsageBadge` ("1 module")
+and `StorageUsageBadge` (`formatBytes(storage_bytes)` + " used", 1024-based units) next to the
+heading (moved out of the `h1` so the heading's name stays "Modules"). Phase 4 appends the plan
+limits to both.
 
 ### Route map
 
@@ -1347,8 +1473,8 @@ record", and `useDeleteRecord` is where attachment rows and storage objects join
 | `/w/:workspaceId`         | `ProtectedRoute`  | `AppLayout` > `WorkspaceRoute` > `DashboardPage` (workspaces list, recent activity) |
 | `/w/:workspaceId/modules` | `ProtectedRoute`  | `WorkspaceRoute` > `ModulesPage` (cards with field count, usage badge, "New module" o/a, template empty state) |
 | `/w/:workspaceId/modules/:moduleId` | `ProtectedRoute` | `WorkspaceRoute` > `ModulePage` (tabs via `?tab=`: Records: toolbar, table, pagination with the URL contract above; Fields: list; add/edit/reorder/delete o/a) |
-| `/w/:workspaceId/modules/:moduleId/records/new` | `ProtectedRoute` | `WorkspaceRoute` > `NewRecordPage` (form; no-fields notice) |
-| `/w/:workspaceId/modules/:moduleId/records/:recordId` | `ProtectedRoute` | `WorkspaceRoute` > `RecordPage` (read view, delete dialog; `?edit=1` edit form; "Record not found" for unknown ids and ids of another module or workspace) |
+| `/w/:workspaceId/modules/:moduleId/records/new` | `ProtectedRoute` | `WorkspaceRoute` > `NewRecordPage` (form; no-fields notice; after create -> the record page) |
+| `/w/:workspaceId/modules/:moduleId/records/:recordId` | `ProtectedRoute` | `WorkspaceRoute` > `RecordPage` (read view with Attachments, delete dialog; `?edit=1` edit form; "Record not found" for unknown ids and ids of another module or workspace) |
 | `/w/:workspaceId/modules/:moduleId/settings` | `ProtectedRoute` | `WorkspaceRoute` > `ModuleSettingsPage` (name, slug, description, icon; danger zone o/a with typed-name delete) |
 | `/w/:workspaceId/members` | `ProtectedRoute`  | `WorkspaceRoute` > `MembersPage` (table, invite form o/a, pending invitations o/a) |
 | `/w/:workspaceId/settings`| `ProtectedRoute`  | `WorkspaceRoute` > `WorkspaceSettingsPage` (general form; danger zone for owners) |
@@ -1390,8 +1516,10 @@ module or workspace (or a malformed id) gets `RecordNotFound` the same way.
   `storage.objects` policies, `storage_deletion_queue`, `workspace_usage` with `attachments` and
   `storage_bytes`), Edge Functions `export-records` and `purge-attachments`, tests
   `19_isolation_attachments` and `20_storage_policies`. Suite: 20 files, 850 tests, passing on a
-  fresh and on a used database. Part 14 builds the upload, download and export UI.
-- Phase 3, still open: the attachment and export UI (Part 14, contract above); scheduling
+  fresh and on a used database.
+- Part 14 (done 2026-11-04): attachments UI on the record page (upload, download, delete),
+  "Export CSV", storage usage on the Modules page, create -> record page. Vitest: 59 files, 418 tests.
+- Phase 3, still open: the Playwright primary journey (Part 15); scheduling
   `purge-attachments` (Phase 5); a transactional `create_module_with_fields` for templates
   (optional, see the modules section).
 - Phase 4: billing tables, `check_entitlement` (on top of `workspace_usage`), `create-workspace`,

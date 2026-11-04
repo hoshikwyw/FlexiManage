@@ -5,12 +5,13 @@ import { Link, useNavigate } from 'react-router-dom'
 import { buttonVariants } from '@/components/ui/button'
 import { useFieldDefinitions } from '@/features/modules/api/use-field-definitions'
 import { WORKSPACE_ROUTES } from '@/features/workspaces/lib/workspace-routes'
-import type { FieldDefinition } from '@/types/database'
+import type { FieldDefinition, WorkspaceRole } from '@/types/database'
 
 import { useRecords } from '../api/use-records'
 import { useRecordsUrlState } from '../hooks/use-records-url-state'
 import { lastPage } from '../lib/pagination'
 import { hasActiveCriteria, nextSort, withFilter, withoutCriteria } from '../lib/records-query'
+import { ExportCsvButton } from './ExportCsvButton'
 import { RecordsPagination } from './RecordsPagination'
 import { RecordsTable } from './RecordsTable'
 import {
@@ -27,15 +28,27 @@ const SEARCH_DEBOUNCE_MS = 300
 interface RecordsTabProps {
   workspaceId: string
   moduleId: string
+  /** For the export file name fallback. */
+  moduleSlug?: string
+  /** The caller's role: "Export CSV" is shown to owners and admins only. */
+  role?: WorkspaceRole | null
 }
 
 /** The Records tab of a module: waits for the field definitions, then renders the list. */
-export function RecordsTab({ workspaceId, moduleId }: RecordsTabProps) {
+export function RecordsTab({ workspaceId, moduleId, moduleSlug, role }: RecordsTabProps) {
   const fields = useFieldDefinitions(workspaceId, moduleId)
 
   if (fields.isPending) return <RecordsTableSkeleton columns={4} />
   if (fields.isError) return <RecordsError onRetry={() => void fields.refetch()} />
-  return <RecordsList workspaceId={workspaceId} moduleId={moduleId} fields={fields.data} />
+  return (
+    <RecordsList
+      workspaceId={workspaceId}
+      moduleId={moduleId}
+      moduleSlug={moduleSlug}
+      role={role}
+      fields={fields.data}
+    />
+  )
 }
 
 /**
@@ -46,6 +59,8 @@ export function RecordsTab({ workspaceId, moduleId }: RecordsTabProps) {
 export function RecordsList({
   workspaceId,
   moduleId,
+  moduleSlug = '',
+  role = null,
   fields,
 }: RecordsTabProps & { fields: FieldDefinition[] }) {
   const navigate = useNavigate()
@@ -112,7 +127,14 @@ export function RecordsList({
           />
         </div>
         <div className="flex gap-2">
-          {/* Part 14: "Export CSV" (owner/admin, Edge Function `export-records`) goes here. */}
+          <ExportCsvButton
+            workspaceId={workspaceId}
+            moduleId={moduleId}
+            moduleSlug={moduleSlug}
+            role={role}
+            query={query}
+            disabled={records.isPending || total === 0}
+          />
           <Link to={createHref} className={buttonVariants()}>
             <PlusIcon aria-hidden="true" />
             New record

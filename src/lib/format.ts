@@ -47,3 +47,25 @@ export function formatDateOnly(value: string | null | undefined): string {
   const date = parseIsoDate(value)
   return date ? dateFormatter.format(date) : ''
 }
+
+const BYTE_UNITS = ['KB', 'MB', 'GB', 'TB'] as const
+
+/**
+ * Human-readable size in 1024-based units, the way Windows and the 10 MB
+ * attachment limit (10,485,760 bytes) count: `0 B`, `512 B`, `1.5 KB`,
+ * `12.3 MB`, `10 MB`. One decimal below 100 in a unit, none above; a trailing
+ * `.0` is dropped. Negative or non-finite input renders `0 B`.
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  let value = bytes
+  let unit: (typeof BYTE_UNITS)[number] = 'KB'
+  for (const next of BYTE_UNITS) {
+    value /= 1024
+    unit = next
+    if (value < 1023.95) break
+  }
+  const text = value < 99.95 ? value.toFixed(1).replace(/\.0$/, '') : Math.round(value).toString()
+  return `${text} ${unit}`
+}

@@ -64,7 +64,7 @@ from a template ("Housekeeping tasks" or "Clients") or blank, then manage its fi
 page's Fields tab (add, edit label and required flag, reorder, delete) and rename or delete the
 module under `/w/<id>/modules/<moduleId>/settings`. Every member works with records on the
 Records tab (server-side search, per-field filters, sorting and pagination, all kept in the URL)
-and creates, opens, edits and deletes them under `/w/<id>/modules/<moduleId>/records/...`.
+and creates, opens, edits and deletes them under `/w/<id>/modules/<moduleId>/records/...`. A record's page lists its attachments (any member uploads and downloads files of up to 10 MB, at most 10 per record), and owners and admins get "Export CSV" on the Records tab for the current search and filters (needs `npm run functions:serve` and the app opened on `http://localhost:5173`, the functions' CORS origin).
 
 Invite flow: on `/w/<id>/members` an owner or admin invites by email and role; the invitation
 appears under "Pending invitations" with a Revoke button. Email delivery is not wired up yet

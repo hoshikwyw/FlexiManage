@@ -114,7 +114,8 @@ export function RecordForm({
 
       <FormServerError message={serverError} />
 
-      {/* Part 13: attachment upload slot for new records (after the first save). */}
+      {/* No uploads here: an attachment needs an existing record, so files are added on the
+          record page after saving (create navigates there). */}
       <div className="flex flex-wrap gap-2">
         <SubmitButton pending={pending} pendingLabel="Saving...">
           {mode === 'create' ? 'Create record' : 'Save changes'}

@@ -94,7 +94,12 @@ export function ModulePage() {
           <TabsTrigger value="fields">Fields</TabsTrigger>
         </TabsList>
         <TabsContent value="records">
-          <RecordsTab workspaceId={workspace.id} moduleId={module.data.id} />
+          <RecordsTab
+            workspaceId={workspace.id}
+            moduleId={module.data.id}
+            moduleSlug={module.data.slug}
+            role={role}
+          />
         </TabsContent>
         <TabsContent value="fields">
           <FieldsTab workspaceId={workspace.id} moduleId={module.data.id} canManage={canManage} />

@@ -49,19 +49,33 @@ function renderTable(sort: RecordSort = { by: 'updated_at', dir: 'desc' }) {
 }
 
 describe('RecordsTable', () => {
-  it('renders title, fields in order and updated, formatting values through the registry', () => {
-    renderTable()
-    const table = screen.getByRole('table', { name: 'Records' })
-    expect(
-      within(table)
-        .getAllByRole('columnheader')
-        .map((th) => th.textContent),
-    ).toEqual(['Title', 'Company', 'Contact email', 'Status', 'Contract value', 'Updated'])
-    const [, acme, globex] = within(table).getAllByRole('row')
-    expect(acme).toHaveTextContent('Active')
-    expect(acme).toHaveTextContent(/€|EUR/)
-    expect(globex).toHaveTextContent('gone (removed option)')
-  })
+  // First test of the file: it pays the jsdom/Intl warm-up. In the full parallel suite on a
+  // loaded machine it once took 5.5 s (0.4 s alone) and hit the 5 s default timeout, so it
+  // reads the cells with plain selectors (role queries compute ARIA roles and accessible
+  // names for every element) and gets explicit headroom. Roles are covered by the tests below.
+  it(
+    'renders title, fields in order and updated, formatting values through the registry',
+    {
+      timeout: 15_000,
+    },
+    () => {
+      renderTable()
+      const table = screen.getByLabelText('Records')
+      expect(table.tagName).toBe('TABLE')
+      expect(Array.from(table.querySelectorAll('thead th'), (th) => th.textContent)).toEqual([
+        'Title',
+        'Company',
+        'Contact email',
+        'Status',
+        'Contract value',
+        'Updated',
+      ])
+      const [acme, globex] = Array.from(table.querySelectorAll('tbody tr'))
+      expect(acme).toHaveTextContent('Active')
+      expect(acme).toHaveTextContent(/€|EUR/)
+      expect(globex).toHaveTextContent('gone (removed option)')
+    },
+  )
 
   it('marks the sorted column with aria-sort and the others with none', () => {
     renderTable({ by: 'f.value', dir: 'asc' })
