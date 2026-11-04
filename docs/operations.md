@@ -1,8 +1,9 @@
 # Operations
 
 Runtime and tooling notes for operators. Updated by the `devops-engineer` and `supabase-engineer`
-agents. Last updated: 2026-11-04 (migration 006: scheduled maintenance with pg_cron, pg_net and
-Vault, the new purge result shape, `attachment-url`, test file `21`, `purge-drain-check.sh`).
+agents. Last updated: 2026-11-05 (migration 007: plans and limits, "Changing a workspace's plan",
+Edge Function `change-plan`, test file `22`, concurrency case (e), e2e plan setup). Previous:
+2026-11-04 (migration 006: scheduled maintenance, purge result shape, `attachment-url`).
 
 ## Production prerequisites
 
@@ -107,8 +108,8 @@ never collects it. `npm run db:reset` returns to the seed.
 
 Conventions (2026-11-03, Part 8b):
 
-- Files are numbered (`01_rls_enabled.sql` ... `21_phase3_fixes.sql`; 21 files, 973 tests as
-  of migration 006) and each wraps everything in `begin; select plan(N); ... select * from
+- Files are numbered (`01_rls_enabled.sql` ... `22_plans_and_entitlements.sql`; 22 files, 1140
+  tests as of migration 007, 2026-11-05; 21 files, 973 tests as of migration 006) and each wraps everything in `begin; select plan(N); ... select * from
   finish(); rollback;`, so a run leaves no data behind. `01` holds the structural totals (table
   count, function count, grants, policy names) and must be updated by every migration; `13` to
   `18` cover the content model (isolation of modules, fields and records, custom value
@@ -116,7 +117,16 @@ Conventions (2026-11-03, Part 8b):
   attachments (table isolation, checks, cap, audit, deletion queue, usage) and the `attachments`
   bucket's `storage.objects` policy; `21` covers migration 006 (no client ids, the C4 search
   queries, `update_record`, `record.deleted`, number/blank/nested validation, size caps, file
-  names, storage reconciliation, `uploaded_at`, the sweep, the cron helpers).
+  names, storage reconciliation, `uploaded_at`, the sweep, the cron helpers); `22` covers migration
+  007 (plans, subscriptions, every plan limit with the exact contract C6 detail, invitation and
+  acceptance rule, downgrades, bypass, `change_workspace_plan` and its audit).
+- Plan limits (migration 007): files `02` to `21` are not about limits and their fixtures exceed
+  Free (extra members, a second module, workspaces owned by alice). The include therefore puts
+  Workspaces A and B on Business **inside each test transaction** (whatever plan a manual session
+  left them on) and deletes the `subscription.*` audit rows that update wrote, so audit
+  assertions keep seeing only the test's own rows. Fixtures inserted as `postgres` are never
+  limit-checked (`entitlement_check_bypassed()`); writes while impersonating are. `22` tests the
+  limits on workspaces it creates itself.
 - Migration 006 removed `id` from the insert grants of `modules`, `field_definitions` and
   `records`. The include grants `insert (id)` on those three tables back to `authenticated`
   **inside the test transaction only** (rolled back with it) so the fixture helpers can keep
@@ -196,6 +206,7 @@ pass on 2026-11-05, migration 006, about 6 s):
 | (b) delete field `x` / insert a record with `x`, both orders and simultaneous | insert first: the delete waits on the module row lock and its strip removes `x` from the new record; delete first: the insert waits and fails `23514 custom_values.x: ...`; never a record with `x` |
 | (c) remove select option `c` / write `c`, both orders and simultaneous | write first: the option update waits and fails `option "c" is still used by records`; removal first: the write waits and fails on `custom_values.stage`; never a stored value outside the options |
 | (d) two simultaneous `update_record` calls with the same expected `updated_at` | exactly one succeeds; the other waited on the row lock and gets `PT409 record_changed`; the winner's value is stored |
+| (e) two simultaneous record inserts into a Free workspace with 199 of 200 records (migration 007) | exactly one succeeds; the other waited on the per-workspace entitlement advisory lock and gets `PT402 plan_limit_exceeded`; 200 records. Filler written as `postgres` (not limit-checked) and removed afterwards (2026-11-05: 9 tests pass, about 7 s) |
 
 Fixtures (fixed ids `...0cc...` in `tests/fixtures/concurrency.ts`: one user
 `concurrency-owner@example.com`, workspace `concurrency-tests`, one module with fields `company`,
@@ -208,7 +219,7 @@ run's setup. Do not use these ids or that email for manual testing.
 
 `npm run functions:serve` needs the stack running. It starts the Docker edge runtime (Deno 2; no
 Deno install on the host is needed) and serves `invite-member`, `accept-invitation`,
-`export-records`, `purge-attachments` and `attachment-url`, reloading on every file change. Stop
+`export-records`, `purge-attachments`, `attachment-url` and `change-plan` (migration 007), reloading on every file change. Stop
 it with Ctrl+C; the stack keeps running (the CLI leaves the `supabase_edge_runtime_fleximanage`
 container behind when it is killed; `docker stop supabase_edge_runtime_fleximanage`).
 
@@ -345,6 +356,12 @@ Conventions:
   her direct `createSignedUrl` fails) and removes it in teardown the way the app does (contract
   C2): it deletes the row only, asserts a `storage_deletion_queue` entry for the path, calls
   `purge-attachments` once and asserts that no `storage.objects` row is left for the path.
+- Plan limits (migration 007): workspaces created by e2e users start on Free (1 module, 2 members
+  including pending invitations, 200 records, 50 MB). `records.spec.ts` (two modules) and
+  `validation.spec.ts` (its duplicate-slug case inserts a second module) move their workspace to
+  Business in setup with `changePlan()` from `tests/e2e/support/admin.ts`, which calls the operator
+  function `change-plan` with the local service-role key (same in-memory handling as the purge).
+  The journey stays on Free (one module, one invited member).
 - `records.spec.ts` (2026-11-05) covers the Phase 3 review fixes in its own workspace with two
   modules from the Clients template: search for `12500.5` and for `acme` (a record whose only
   match is the contact email `jane@acme.example`), the edit conflict of `update_record` (two
@@ -387,8 +404,49 @@ the 33 tests, including starting the dev server and `supabase functions serve`. 
 in a row without `db:reset` and one after it all passed.
 
 The service-role key is read (in memory, from `supabase status -o env`) by the global teardown
-and by the isolation spec's teardown for `purge-attachments` only; no spec uses it for anything
-else and it is never printed.
+and by the isolation spec's teardown for `purge-attachments`, and by the setup of
+`records.spec.ts` and `validation.spec.ts` for `change-plan` (migration 007); no spec uses it for
+anything else and it is never printed. 2026-11-05 (migration 007): 45 of 45 pass after
+`db:reset`.
+
+## Changing a workspace's plan
+
+Added 2026-11-05 (migration 007, Part 18a). Every workspace starts on Free; billing is manual
+until decision D3, and the platform admin web (Part 18c) does not exist yet. Until then an
+operator changes a plan with the operator-only Edge Function `change-plan` (or, equivalently, the
+database function behind it). Both write `subscription.plan_changed { from, to }` to the
+workspace's audit log. Downgrades are allowed when the workspace is over the new limits: nothing
+is deleted, the response lists `overLimit`, and only new inserts of those resources are refused
+(`402 plan_limit_exceeded`, contract C6 in `docs/architecture.md`).
+
+Locally, with the stack and the functions running (`npm run functions:serve`, or the edge runtime
+of `supabase start`). `SERVICE` is the `SERVICE_ROLE_KEY` from `npx supabase status -o env` and
+`ANON` the `ANON_KEY`; never echo them or put them in a file:
+
+```sh
+curl -s -X POST http://127.0.0.1:54321/functions/v1/change-plan \
+  -H "apikey: $ANON" -H "Authorization: Bearer $SERVICE" -H "Content-Type: application/json" \
+  -d '{"workspaceId":"00000000-0000-0000-0000-0000000000bb","plan":"pro"}'
+# -> {"data":{"workspaceId":"...","from":"free","to":"pro","changed":true,"overLimit":[]}}
+```
+
+Plans: `free`, `pro`, `business` (limits in `docs/architecture.md`, "Plans and limits"). The
+status is set to `active`; calling again with the same plan answers `changed: false` and writes
+nothing. Without the functions, in Studio's SQL editor or psql as `postgres`:
+
+```sql
+select * from public.change_workspace_plan('<workspace id>', 'pro');
+```
+
+A plain `update public.subscriptions set plan_key = 'pro' where workspace_id = '<id>'` is audited
+too, but skips the locks and the `overLimit` report; prefer the function. Inspect a workspace's
+limits and usage as `postgres` with
+`select * from public.subscriptions s join public.plans p on p.key = s.plan_key where s.workspace_id = '<id>'`
+and `select r, public.entitlement_usage('<id>', r) from unnest(array['members','modules','records','storage_bytes']) r`.
+
+Sessions as `postgres` (Studio, psql, the seed) are never limit-checked, so operator inserts can
+push a workspace over its limits; that is intended for support work and is shown as over-limit
+in the app. `npm run db:reset` puts the seed back: Workspace A on Business, B on Free.
 
 ## Attachments bucket
 
@@ -525,8 +583,9 @@ is enabled and concurrency cancels superseded runs on the same ref.
   grant and asserts status codes only: no credentials 401, invite into a foreign workspace 403,
   unknown invitation token 404, `export-records` into a foreign workspace 403,
   `export-records` of the seed module Clients 200 with `text/csv` (each run writes one
-  `records.exported` audit row in Workspace A), and `attachment-url` for a random id 404 (added
-  2026-11-04). If the edge runtime is not answering it starts `supabase functions serve` itself
+  `records.exported` audit row in Workspace A), `attachment-url` for a random id 404 (added
+  2026-11-04), and `change-plan` without credentials 401 and with a user JWT 403 (added 2026-11-05,
+  migration 007; 8 assertions). If the edge runtime is not answering it starts `supabase functions serve` itself
   and stops it afterwards. Run it locally with `bash scripts/ci/functions-smoke.sh` (needs curl,
   and jq or node). Since 2026-11-05 (Part 17b) the job also runs, in this order: the tokenizer
   fixture under Deno (`deno test --no-lock --allow-read tests/parity/search-tokenizer.deno.ts`

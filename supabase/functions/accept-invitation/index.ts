@@ -5,7 +5,9 @@
  * Success:  200 { data: { workspaceId, workspaceName, workspaceSlug, role } }
  * Errors:   401 unauthorized, 400 validation_error, 404 not_found (unknown or already
  *           used token), 410 invitation_expired, 403 forbidden (invitation was issued
- *           to a different email, or the caller's email is not verified).
+ *           to a different email, or the caller's email is not verified), 402
+ *           plan_limit_exceeded (the workspace is over its member limit, e.g. after a
+ *           downgrade since the invitation was sent; contract C6, migration 007).
  *
  * Thin wrapper around the Postgres function `public.accept_invitation(p_token)`
  * (migration 002). The function runs as `security definer` in one transaction: it
@@ -15,11 +17,12 @@
  * client so `auth.uid()` is the caller; the service-role key is not needed here.
  *
  * The function raises with PostgREST-style SQLSTATEs (`PT401`, `PT403`, `PT404`,
- * `PT410`) which are mapped to the stable error codes below.
+ * `PT410`, and `PT402` from the membership insert's entitlement trigger) which are mapped to
+ * the stable error codes below.
  */
 import { z } from 'zod'
 import { requireUser } from '../_shared/auth.ts'
-import { AppError, jsonOk, type ErrorCode } from '../_shared/errors.ts'
+import { AppError, jsonOk, planLimitError, type ErrorCode } from '../_shared/errors.ts'
 import { createHandler } from '../_shared/handler.ts'
 import type { WorkspaceRole } from '../_shared/types.ts'
 import { parseBody } from '../_shared/validation.ts'
@@ -53,6 +56,8 @@ Deno.serve(
       .single<AcceptRow>()
 
     if (error) {
+      const limit = planLimitError(error)
+      if (limit) throw limit
       const mapped = SQLSTATE_TO_ERROR[error.code]
       if (mapped) throw new AppError(mapped.status, mapped.code, error.message)
       console.error('[accept-invitation] rpc failed', error.code, error.message)

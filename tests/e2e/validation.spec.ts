@@ -1,5 +1,6 @@
 import { expect, test, type BrowserContext, type Page, type Request } from '@playwright/test'
 
+import { changePlan } from './support/admin'
 import { signUpViaApi } from './support/api'
 import { specData } from './support/data'
 import { count, lit } from './support/db'
@@ -18,6 +19,9 @@ import {
  * Client and server validation on the record form, the module form and attachments (B1, B2,
  * B4). Runs in its own workspace (owner signed up for this spec) with a module from the
  * "Clients" template: Company (text, required), Contact email, Status (select), Contract value.
+ * The duplicate-slug case inserts a second module, which the Free plan (one module) would refuse
+ * with 402 plan_limit_exceeded before the unique index answers, so setup moves the workspace to
+ * Business through the operator function `change-plan` (migration 007).
  */
 test.skip(!hasLocalBackend, SKIP_WITHOUT_BACKEND)
 test.describe.configure({ mode: 'serial' })
@@ -57,6 +61,7 @@ test.beforeAll(async ({ browser }) => {
   page = await context.newPage()
   await signIn(page, owner.email, owner.password)
   workspaceId = await createFirstWorkspace(page, workspaceName)
+  await changePlan(workspaceId, 'business')
   moduleId = await createModuleFromTemplate(page, workspaceId, 'Clients', moduleName)
   await page.goto(moduleUrl(workspaceId, moduleId))
   recordId = await createRecord(page, {

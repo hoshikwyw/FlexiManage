@@ -92,3 +92,32 @@ export type AttachmentInsert = Pick<
   TablesInsert<'attachments'>,
   'workspace_id' | 'record_id' | 'file_name' | 'content_type' | 'size_bytes'
 >
+
+// Plans and limits (migration 007). Both tables are read-only for clients.
+export type Plan = Tables<'plans'>
+export type Subscription = Tables<'subscriptions'>
+export type SubscriptionStatus = Enums<'subscription_status'>
+export const SUBSCRIPTION_STATUSES = Constants.public.Enums.subscription_status
+
+/**
+ * One row of `workspace_entitlements(p_workspace_id)`: resource (members, modules, records,
+ * storage_bytes, workspaces), plan, limit_value, current_value, over_limit. The `workspaces` row
+ * is about the caller (workspaces they own vs. may own).
+ */
+export type WorkspaceEntitlementRow =
+  Database['public']['Functions']['workspace_entitlements']['Returns'][number]
+
+/** Resources a plan limits; the `resource` of contract C6 errors and entitlement rows. */
+export type PlanResource = 'members' | 'modules' | 'records' | 'storage_bytes' | 'workspaces'
+
+/**
+ * DETAIL of a PT402 `plan_limit_exceeded` error (contract C6), JSON-encoded in
+ * `PostgrestError.details` for direct table writes, and the `details` of the Edge Function
+ * envelope `{ error: { code: 'plan_limit_exceeded', message, details } }`.
+ */
+export interface PlanLimitDetails {
+  resource: PlanResource
+  limit: number
+  current: number
+  plan: string
+}

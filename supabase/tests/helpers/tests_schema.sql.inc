@@ -151,6 +151,23 @@ end;
 $$;
 select tests.assert_seed_invariants();
 
+-- Plan limits (migration 007). Files 02 to 21 test isolation, roles and the
+-- content rules, not plan limits, and their fixtures need more than the Free
+-- limits allow (extra members, modules, workspaces owned by alice and bob). The
+-- seed workspaces are put on Business for the duration of the transaction
+-- (whatever plan a manual session left them on); the subscription.* audit rows
+-- this writes are removed again so audit assertions only see the test's own
+-- rows. 22_plans_and_entitlements.sql tests the limits on its own workspaces.
+-- Fixtures inserted as postgres are never checked (entitlement_check_bypassed).
+update public.subscriptions
+   set plan_key = 'business', status = 'active'
+ where workspace_id in (tests.ws_a(), tests.ws_b())
+   and (plan_key <> 'business' or status <> 'active');
+delete from public.audit_events
+ where workspace_id in (tests.ws_a(), tests.ws_b())
+   and action like 'subscription.%'
+   and created_at >= now();
+
 -- ---------------------------------------------------------------------------
 -- Content fixtures (migration 004). Tests never rely on the seed module,
 -- fields or records; they create their own inside the transaction with the

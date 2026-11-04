@@ -2,9 +2,9 @@
 
 Database and backend reference. Maintained by the `supabase-engineer` agent; every new table,
 function or policy is documented here in the same change that introduces it.
-Last updated: 2026-11-04 (migration 006, Phase 3 review fixes: download function `attachment-url`,
-`update_record`, `record.deleted`, the C4 search tokenizer, storage reconciliation and the
-maintenance schedule: see [Phase 3 review fixes](#phase-3-review-fixes-migration-20261105090000_006_phase3_review_fixessql)).
+Last updated: 2026-11-05 (migration 007, plans, subscriptions and server-side plan limits with
+error contract C6, Edge Function `change-plan`: see [Plans and limits](#plans-and-limits-migration-20261106090000_007_plans_and_entitlementssql)).
+Previous: 2026-11-04 (migration 006, Phase 3 review fixes).
 
 ## Tenancy model
 
@@ -52,6 +52,9 @@ Role capabilities (migrations 001 and 003):
 | Delete own attachment                        |  yes  |  yes  |  yes   |
 | Delete another member's attachment           |  yes  |  yes  |   no   |
 | Export a module to CSV (`export-records`)    |  yes  |  yes  |   no   |
+| Read the plan catalogue and the workspace's subscription (007) |  yes  |  yes  |  yes   |
+| Call `workspace_entitlements(workspace_id)` (007) |  yes  |  yes  |  yes   |
+| Change the workspace's plan (007)            | no (operators: `change-plan`) | no | no |
 
 Records are writable by every member, including records created by someone else. This is the MVP
 rule (migration 004): a small team shares one data set, and per-record ownership or a read-only
@@ -236,7 +239,7 @@ as a parameter; it always comes from `auth.uid()`.
 | `has_workspace_role(p_workspace_id uuid, p_roles workspace_role[])` | boolean | Caller holds one of the given roles in the workspace.   |
 | `current_user_workspace_ids()`                       | setof uuid   | All workspace ids the caller belongs to.                         |
 | `shares_workspace_with(p_user_id uuid)`              | boolean      | Caller and `p_user_id` share at least one workspace (profiles).  |
-| `workspace_usage(p_workspace_id uuid)` (004, recreated in 005) | one row `(modules int, records int, members int, attachments int, storage_bytes bigint)` | Counts for the usage page and the Phase 4 entitlement check; see [workspace_usage](#workspace_usagep_workspace_id-uuid). |
+| `workspace_usage(p_workspace_id uuid)` (004, recreated in 005) | one row `(modules int, records int, members int, attachments int, storage_bytes bigint)` | Counts for the usage badges; see [workspace_usage](#workspace_usagep_workspace_id-uuid). The plan-limit check counts with `entitlement_usage` instead (007). |
 | `can_upload_attachment_object(p_name text, p_metadata jsonb)` (005, replaced in 006) | boolean | `storage.objects` insert policy: metadata present; a pending (`uploaded_at` null, < 1 hour old) row uploaded by the caller (still a member); metadata `mimetype` equals `content_type` and `size` (when present) equals `size_bytes`; no object yet. |
 
 `can_read_attachment_object` and `can_delete_attachment_object` (005) were dropped in migration
@@ -358,6 +361,12 @@ and no table grant, so it is denied for `authenticated`. `o/a` means owner or ad
 | `attachments` (005) | `is_workspace_member(workspace_id)`             | member; `uploaded_by = auth.uid()` (default, not insertable); cols `workspace_id, record_id, file_name, content_type, size_bytes` | none (immutable) | uploader (still a member), or o/a |
 | `storage_deletion_queue` (005) | none                                 | none                                                           | none                                                | none (service role only)                                            |
 | `storage.objects` in bucket `attachments` (005, 006) | none since 006 (downloads: `attachment-url`) | `can_upload_attachment_object(name, metadata)` | none | none since 006 (removal: row delete + queue) |
+| `plans` (007, global)  | every authenticated user (`using (true)`); `anon` none | none                                                       | none                                                | none                                                                   |
+| `subscriptions` (007)  | `is_workspace_member(workspace_id)`             | none (`handle_workspace_subscription()`)                     | none (`change_workspace_plan()`, operators)         | none (workspace cascade)                                               |
+
+Since migration 007 the inserts on `workspaces`, `workspace_members`, `invitations`, `modules`,
+`records` and `attachments` are also plan-limited by before-insert triggers (contract C6, see
+[Plans and limits](#plans-and-limits-migration-20261106090000_007_plans_and_entitlementssql)).
 
 For the three content tables insert and update are column-level grants, so `created_at`,
 `updated_at` and `search_vector` can never be supplied, and `workspace_id`, `module_id` and
@@ -384,6 +393,7 @@ records_select_member                      records_insert_member
 records_update_member                      records_delete_member
 attachments_select_member                  attachments_insert_member
 attachments_delete_uploader_or_owner_admin
+plans_select_authenticated                 subscriptions_select_member
 -- on storage.objects (bucket attachments); the select and delete policies of 005 were
 -- dropped in 006:
 attachments_objects_insert_uploader
@@ -577,16 +587,18 @@ workspace (including an unknown id, so existence is not revealed, and a call wit
 SQLSTATE `42501` `not a member of this workspace`; `anon` gets `42501 permission denied for
 function workspace_usage`. Through PostgREST: `supabase.rpc('workspace_usage', { p_workspace_id })`
 returns `{ modules, records, members, attachments, storage_bytes }[]` with one element
-(`storage_bytes` is a JSON number). Phase 4's entitlement check will call
-it inside the same transaction as the insert; the usage page reads it directly, so both see the
-same numbers.
+(`storage_bytes` is a JSON number). The plan-limit check of migration 007 does not call it (it
+requires membership, and the enforced counts include pending invitations and in-flight uploads):
+it uses `entitlement_usage()`, exposed to the UI as `workspace_entitlements()`; see
+[Plans and limits](#plans-and-limits-migration-20261106090000_007_plans_and_entitlementssql).
 
 ### Not decided yet (Phase 4)
 
 - Record-level audit beyond deletes (`record.created`, edits) and per-record ownership or a
   read-only role; today every member writes every record and only deletes are logged (006).
 - A module-level status list for `records.status` (free text today).
-- Enforcing module and record limits before insert (`check_entitlement` with `workspace_usage`).
+- Enforcing module and record limits before insert: done in migration 007 (`check_entitlement`,
+  live counts, contract C6; see [Plans and limits](#plans-and-limits-migration-20261106090000_007_plans_and_entitlementssql)).
 
 ## Attachments (migration `20261104090000_005_attachments.sql`)
 
@@ -897,6 +909,236 @@ After creating or rotating the secrets run `select public.schedule_storage_maint
 job is created and `invoke_purge_attachments()` got `200 {"data":{"purged":0,"alreadyGone":1,
 "retryable":0,"dead":0}}`; `db reset` removes the secrets again.
 
+## Plans and limits (migration `20261106090000_007_plans_and_entitlements.sql`)
+
+Applied 2026-11-05 (Part 18a, Phase 4, Epic C). Server-side plan limits: every insert that adds a
+member, an invitation, a module, a record, an attachment or a workspace is checked against the
+workspace's plan in the same transaction, and refused with contract C6 when it would exceed it.
+Downgrades never delete data (rule 9). Billing provider integration waits for decision D3; until
+then every subscription is `manual` and operators change plans (`change-plan`, below).
+
+### `plans` (global catalogue, not tenant-owned)
+
+| Column              | Type        | Notes                                                                   |
+| ------------------- | ----------- | ----------------------------------------------------------------------- |
+| `key`               | text PK     | `^[a-z][a-z0-9_]{1,31}$`: `free`, `pro`, `business`                     |
+| `name`              | text        | 1..50 chars                                                             |
+| `price_cents`       | integer     | >= 0, per `billing_interval`                                            |
+| `currency`          | text        | ISO 4217, default `USD`                                                 |
+| `billing_interval`  | text        | `month` or `year`, default `month`                                      |
+| `active`            | boolean     | false: no new subscriptions (`change_workspace_plan` refuses it); existing ones keep its limits |
+| `position`          | integer     | display order                                                           |
+| `max_workspaces`    | integer     | workspaces a user may own (rule below)                                  |
+| `max_members`       | integer     | memberships + pending invitations per workspace                         |
+| `max_modules`       | integer     | modules per workspace                                                   |
+| `max_records`       | integer     | records per workspace (all modules)                                     |
+| `max_storage_bytes` | bigint      | declared attachment bytes per workspace                                 |
+| `created_at`, `updated_at` | timestamptz | `updated_at` by `set_updated_at()`                             |
+
+Seeded by the migration (PLANNING section 8; binary units, as for the 10 MB file cap):
+
+| key        | name     | price_cents | workspaces | members | modules | records | storage bytes            |
+| ---------- | -------- | ----------: | ---------: | ------: | ------: | ------: | -----------------------: |
+| `free`     | Free     |           0 |          1 |       2 |       1 |     200 |  52428800 (50 MB)        |
+| `pro`      | Pro      |         900 |          1 |       5 |       5 |   5,000 |  1073741824 (1 GB)       |
+| `business` | Business |        2900 |          3 |      20 |      20 |  50,000 |  10737418240 (10 GB)     |
+
+Attachments per record stay capped at 10 by `enforce_attachment_cap()` (005/006), independent
+of the plan. Limits are columns, not jsonb: typed, checkable and directly comparable in SQL.
+
+### `subscriptions` (one per workspace)
+
+| Column                     | Type                  | Notes                                                    |
+| -------------------------- | --------------------- | -------------------------------------------------------- |
+| `id`                       | uuid PK               | `gen_random_uuid()`                                      |
+| `workspace_id`             | uuid, unique          | FK `workspaces` on delete cascade; the unique index is its index |
+| `plan_key`                 | text                  | FK `plans(key)`, default `free`                          |
+| `status`                   | `subscription_status` | `active` / `past_due` / `canceled`, default `active`     |
+| `provider`                 | text                  | `manual` only (check), until D3                          |
+| `provider_customer_id`, `provider_subscription_id` | text | nullable, 1..255                                |
+| `current_period_end`       | timestamptz           | nullable (manual plans have none)                        |
+| `created_by`               | uuid                  | default `auth.uid()`; the workspace creator              |
+| `created_at`, `updated_at` | timestamptz           | `updated_at` by `set_updated_at()`                       |
+
+Created on Free / `active` / `manual` by the after-insert trigger `workspaces_create_subscription`
+(`handle_workspace_subscription()`) in the workspace's own transaction; the migration backfilled
+every existing workspace the same way (a workspace already above a Free limit kept everything).
+**Effective plan** (`workspace_effective_plan()`): the subscription's plan while `status` is
+`active` or `past_due` (grace), Free when `canceled` or when no row exists.
+
+Audit (`subscriptions_audit`, `audit_subscription_change()`): every update that changes
+`plan_key` writes `subscription.plan_changed` `{ from, to }`; a status change writes
+`subscription.status_changed` `{ from, to }`. This covers every path (the function below, Studio,
+psql). Actor: `auth.uid()`, else the transaction-local `app.audit_actor_id` set by
+`change_workspace_plan(..., p_actor_id)`, else null (operator). Subscription creation is not
+audited separately: `workspace.created` stands for it.
+
+### Entitlements: a function over live counts, not a table
+
+There is no `entitlements` table and no `usage_counters` table. The limits are the effective
+plan's columns; usage is counted live inside the inserting transaction by
+`entitlement_usage(workspace_id, resource)`:
+
+| Resource        | Counted as                                                                                     |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| `members`       | `workspace_members` rows + pending invitations (`accepted_at is null and expires_at > now()`)  |
+| `modules`       | `modules` rows                                                                                 |
+| `records`       | `records` rows (all modules)                                                                   |
+| `storage_bytes` | sum of `attachments.size_bytes` of uploaded rows and of rows still in flight (pending, younger than one hour: the window of the per-record cap) |
+
+Why: live counts cannot drift. Every delete path frees capacity with no counter to keep in step:
+record delete, module delete (records and attachments cascade), workspace delete, attachment row
+delete, reconciliation rejection, `sweep_stale_attachments()` and stale pending rows (> 1 hour,
+not counted), member removal, account deletion, invitation revoke, and invitation expiry (an
+expired invitation simply stops counting). The counts use the `workspace_id` indexes; at the
+Business ceiling (50,000 records) a count is a few milliseconds. A counter table becomes worth
+its triggers only if insert latency at that size matters (revisit in Phase 5).
+
+`workspace_usage()` (004/005/006) is unchanged and still serves the usage badges. It is not
+reused by the check because it requires the caller to be a member (an invitee accepting an
+invitation is not one yet) and its numbers intentionally differ: its `members` excludes pending
+invitations and its `storage_bytes` counts uploaded rows only. The usage page should read
+`workspace_entitlements()` for "N of M" so the numbers match what the check enforces.
+
+### `workspace_entitlements(p_workspace_id uuid)`
+
+`security definer`, `stable`, executable by `authenticated` only; the caller must be a member
+(else `42501 not a member of this workspace`, also for unknown ids). Returns five rows in this
+order: `(resource text, plan text, limit_value bigint, current_value bigint, over_limit boolean)`
+for `members`, `modules`, `records`, `storage_bytes` (effective plan of the workspace, enforced
+usage) and `workspaces`, which is about the **caller**: workspaces they own vs. may own, with the
+plan granting it. `over_limit` is `current_value > limit_value` (e.g. after a downgrade); "at the
+limit" is `current_value >= limit_value`. Through PostgREST:
+`supabase.rpc('workspace_entitlements', { p_workspace_id })`. Type: `WorkspaceEntitlementRow` in
+`src/types/database.ts`.
+
+### `check_entitlement(p_workspace_id uuid, p_resource text, p_delta bigint default 1)`
+
+`security definer`, volatile, executable by no API role (called from the insert triggers). For
+`members`, `modules`, `records` or `storage_bytes` (anything else: `22023`):
+
+1. returns at once when `entitlement_check_bypassed()` (below);
+2. takes `pg_advisory_xact_lock(hashtext('entitlement:<resource>:<workspace_id>'))`, so two
+   transactions cannot both take the last slot (same pattern as the attachment cap of 006; the
+   loser waits and then counts the winner's row);
+3. reads the effective plan and the live usage (fresh snapshot: the function is volatile);
+4. raises contract C6 when `current + p_delta > limit`.
+
+A multi-row insert sees its own earlier rows, so it is refused as a whole once one row crosses
+the limit. `check_workspace_entitlement(p_owner_id)` does the same for workspace creation with a
+per-user lock `entitlement:workspaces:<user_id>`.
+
+Insert triggers (before insert, named `*_check_entitlement` so they fire before the other
+before-insert triggers, i.e. the entitlement lock is taken before the per-record attachment lock
+and the module row lock):
+
+| Trigger | Function | Check |
+| ------- | -------- | ----- |
+| `workspaces_check_entitlement` | `enforce_workspace_entitlement()` | `check_workspace_entitlement(created_by)` |
+| `workspace_members_check_entitlement` | `enforce_entitlement()` | `members`, delta 0 when a pending invitation for the joining user's email exists, else 1 |
+| `invitations_check_entitlement` | `enforce_entitlement()` | `members`, delta 1 |
+| `modules_check_entitlement` | `enforce_entitlement()` | `modules`, delta 1 |
+| `records_check_entitlement` | `enforce_entitlement()` | `records`, delta 1 |
+| `attachments_check_entitlement` | `enforce_entitlement()` | `storage_bytes`, delta = declared `size_bytes` |
+
+RLS evaluates an insert's `with check` after the before triggers. So that the error never
+reveals another workspace's plan or usage (and a permission problem is reported as one), the
+trigger skips the check when a signed-in caller would be refused by the insert policy anyway:
+not a member of the workspace, or, for `invitations` and `modules`, not an owner or admin; for
+`workspaces`, a `created_by` other than the caller. RLS then answers `42501`. Updates and deletes
+are never checked.
+
+### Rules
+
+- **Workspace count.** A user's *owned* workspaces are those where they hold the `owner` role.
+  The *allowed* count is the highest `max_workspaces` among the effective plans of the workspaces
+  they own; Free (1) when they own none. Creating a workspace is refused when owned + 1 > allowed.
+  With today's catalogue: owning one Business workspace allows three (the others start on Free);
+  Free and Pro owners own one. The `plan` in the error is the plan granting the allowance.
+  Ownership gained by a role change or by succession (`handle_user_deleted()`) is not checked
+  (not an insert; rule 9).
+- **Invitations reserve seats; acceptance re-checks.** A pending, unexpired invitation counts as
+  a member, so inviting is refused when memberships + pending invitations would exceed
+  `max_members`. Accepting consumes the reserved seat: the membership insert from
+  `accept_invitation()` checks with delta 0, i.e. it succeeds while memberships + pending
+  invitations (including this one) are within the limit. After a downgrade between invitation and
+  acceptance that leaves the workspace over its member limit, acceptance is refused with C6
+  (`accept-invitation` answers 402) and the invitation stays pending; it succeeds again once the
+  owner removes members or revokes invitations, or upgrades. Revoking or letting an invitation
+  expire frees its seat.
+- **Downgrades never delete data.** `change_workspace_plan()` moves a workspace to a lower plan
+  even when it is over the new limits and reports `over_limit`. The workspace keeps everything;
+  edits and deletes keep working; only new inserts of an over-limit resource are refused (a
+  resource still under its limit keeps accepting inserts).
+- **Seed and operator bypass.** `entitlement_check_bypassed()` is true when the session is
+  `postgres` or `supabase_admin` and has not switched role (`current_setting('role') = 'none'`):
+  `supabase db reset` seeding, psql and Studio, pgTAP and e2e fixtures written as postgres.
+  Security definer functions do not change the `role` setting, so a user reaching an insert
+  through `accept_invitation()` or `handle_new_workspace()` is still checked, and `service_role`
+  (Edge Functions, PostgREST with the service key) is always checked. Seed Workspace A is on
+  Business, B on Free (at its module limit, 1 of 1).
+- **Bulk paths.** Templates create one module (checked once) and its fields (not limited).
+  `accept_invitation()` is checked as above. The `postgres` bypass covers seed and fixtures.
+
+### Contract C6: `plan_limit_exceeded`
+
+A refused insert raises SQLSTATE **`PT402`** with message **`plan_limit_exceeded`**, `DETAIL` a
+JSON object and a `HINT`:
+
+```json
+{ "resource": "records", "limit": 200, "current": 200, "plan": "free" }
+```
+
+| Key        | Type   | Meaning                                                                   |
+| ---------- | ------ | ------------------------------------------------------------------------- |
+| `resource` | string | `members`, `modules`, `records`, `storage_bytes` or `workspaces`          |
+| `limit`    | number | the effective plan's limit (`storage_bytes`: bytes)                       |
+| `current`  | number | enforced usage before the refused insert (may exceed `limit` after a downgrade) |
+| `plan`     | string | effective plan key (`workspaces`: the plan granting the allowance)        |
+
+- **PostgREST** (direct table writes from the browser): HTTP **402**, body
+  `{ code: "PT402", message: "plan_limit_exceeded", details: "<the JSON as a string>", hint }`.
+  supabase-js exposes it as `PostgrestError` with `code === 'PT402'`; parse `details` with
+  `JSON.parse`. Type `PlanLimitDetails` in `src/types/database.ts`.
+- **Edge Functions** (`invite-member`, `accept-invitation`): HTTP **402**, envelope
+  `{ error: { code: "plan_limit_exceeded", message, details } }` with `details` the parsed
+  object; mapped by `planLimitError()` in `_shared/errors.ts`. `export-records` and
+  `attachment-url` insert nothing limited and never answer 402.
+- Key order inside the DETAIL string is not part of the contract (Postgres orders jsonb keys).
+
+### `change_workspace_plan(p_workspace_id uuid, p_plan_key text, p_actor_id uuid default null)`
+
+`security definer`, executable by `service_role` only. Returns one row
+`(workspace_id, from_plan, to_plan, changed, over_limit text[])`. Refuses an unknown or inactive
+plan (`22023 unknown_plan`) and an unknown workspace (`PT404 workspace_not_found`). Takes the four
+resource locks of the workspace (fixed order: members, modules, records, storage_bytes) so an
+insert racing the change is checked against either the old or the new plan; creates the
+subscription row if it is missing; sets `plan_key` and `status = 'active'` (a manual plan change
+reactivates a `past_due` or `canceled` subscription); `changed` is false (no write, no audit) when
+both were already in place. `over_limit` lists the resources whose enforced usage exceeds the new
+plan. `p_actor_id` (trusted: only the service role calls it) becomes the audit actor.
+
+### Functions added by migration 007
+
+| Function | Security | Callable by | Purpose |
+| -------- | -------- | ----------- | ------- |
+| `workspace_entitlements(uuid)` | definer, stable | `authenticated` | limits and enforced usage per resource (above) |
+| `change_workspace_plan(uuid, text, uuid)` | definer | `service_role` | operator plan change (above) |
+| `check_entitlement(uuid, text, bigint)` | definer, volatile | none (triggers) | C6 check for members, modules, records, storage_bytes |
+| `check_workspace_entitlement(uuid)` | definer, volatile | none (trigger) | C6 check for workspace creation |
+| `workspace_effective_plan(uuid)` | definer, stable | none | effective plan row |
+| `entitlement_usage(uuid, text)` | definer, stable | none | enforced usage of one resource |
+| `owned_workspace_allowance(uuid)` | definer, stable | none | `(plan_key, max_workspaces, owned)` for a user |
+| `entitlement_check_bypassed()` | invoker, stable | none | postgres / supabase_admin session without SET ROLE |
+| `enforce_entitlement()`, `enforce_workspace_entitlement()` | definer | none | insert triggers above |
+| `handle_workspace_subscription()`, `audit_subscription_change()` | definer | none | subscription creation and audit triggers |
+
+Tests: `supabase/tests/22_plans_and_entitlements.sql` (structure, catalogue, isolation, every
+resource at its limit with the exact DETAIL, frees by delete/revoke/expiry/removal/cascade,
+downgrade between invite and accept, over-limit after downgrade, bypass, audit) and case (e) of
+`tests/concurrency/concurrency.test.ts` (two sessions racing for the last record slot: one wins,
+the loser waited on the advisory lock and gets `PT402`).
+
 ## RLS recursion note
 
 `workspace_members` has RLS enabled and its own policies call `is_workspace_member`, which reads
@@ -916,6 +1158,11 @@ definer function.
 | bob         | `00000000-0000-0000-0000-00000000000b` | `bob@example.com`, password `password123`   |
 | Workspace A | `00000000-0000-0000-0000-0000000000aa` | slug `workspace-a`, owner alice             |
 | Workspace B | `00000000-0000-0000-0000-0000000000bb` | slug `workspace-b`, owner bob               |
+
+Plans (migration 007): Workspace A is on Business (the seed moves it once and writes
+`subscription.plan_changed`), Workspace B on Free and at its module limit (1 of 1). The pgTAP
+include puts both on Business inside each test transaction; `22` tests the limits on its own
+workspaces.
 
 Alice is not a member of B and Bob is not a member of A. The seed inserts `auth.users` and
 `auth.identities` directly (local only), and inserts the workspaces with `created_by` set so the
@@ -957,7 +1204,7 @@ audit. Functions never return the service-role key or an invitation token.
 | Module          | Exports                                                     | Purpose                                                                                     |
 | --------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `cors.ts`       | `corsHeaders(req)`, `handlePreflight(req)`                  | Allow-list from env `ALLOWED_ORIGIN` (comma-separated, default `http://localhost:5173`).    |
-| `errors.ts`     | `AppError`, `ErrorCode`, `jsonOk`, `jsonError`, `toAppError` | Envelope `{ data }` or `{ error: { code, message, details? } }`; unknown errors -> `internal`. |
+| `errors.ts`     | `AppError`, `ErrorCode`, `jsonOk`, `jsonError`, `toAppError`, `planLimitError`, `PlanLimitDetails` | Envelope `{ data }` or `{ error: { code, message, details? } }`; unknown errors -> `internal`; `planLimitError(pgError)` maps `PT402` to 402 `plan_limit_exceeded` with the parsed C6 detail (007). |
 | `handler.ts`    | `createHandler(methods, fn)`                                | Wraps a function with preflight, method check and error mapping.                            |
 | `auth.ts`       | `requireUser(req)`, `adminClient()`, `requireWorkspaceRole()`, `requireServiceRole(req)` | User-scoped client (anon key + caller JWT), service-role client, membership/role check; operator-only guard (bearer must equal the service-role or secret key, constant-time compare). |
 | `validation.ts` | `parseBody(req, schema)`                                    | JSON body through a Zod schema; failures -> 400 `validation_error` with flattened issues.    |
@@ -977,6 +1224,7 @@ audit. Functions never return the service-role key or an invitation token.
 |  405 | `method_not_allowed` | Anything but `POST` (and `OPTIONS`).                                                           |
 |  409 | `conflict`           | The invited email already belongs to a member of the workspace.                                |
 |  410 | `invitation_expired` | `expires_at` has passed.                                                                       |
+|  402 | `plan_limit_exceeded` | Contract C6 (migration 007): `invite-member` (memberships + pending invitations at the plan's member limit) or `accept-invitation` (workspace over its member limit, e.g. after a downgrade); `details: { resource, limit, current, plan }`. Mapped from SQLSTATE `PT402` by `planLimitError()`. |
 |  413 | `export_too_large`   | `export-records`: more than 50,000 matching rows; `details: { limit: 50000 }`. Filter first.   |
 |  500 | `internal`           | Unexpected failure; message is generic, details only in the function log.                      |
 
@@ -990,7 +1238,10 @@ invitation for the same email is returned unchanged (`200`, idempotent, same `id
 pending invitation for the email is deleted first (audited as `invitation.revoked`) and a new
 one created (`200`, new `id`). Two concurrent requests for a new email both answer `200` with
 the same `id`: the loser's insert hits `invitations_pending_unique` (`23505`) and returns the
-winner's row.
+winner's row. Since migration 007 the insert is plan-limited: when memberships plus pending
+invitations already fill the plan's `max_members`, the trigger raises `PT402` and the function
+answers `402 plan_limit_exceeded` (contract C6). The idempotent "existing pending invitation"
+answer comes before the insert, so re-inviting a pending address never hits the limit.
 
 The lookups (caller role, current members' emails, pending invitations) use the service-role
 client. The expired-row delete and the insert deliberately use the caller's own client: RLS
@@ -1005,7 +1256,8 @@ Request `{ token: string }`. Response
 user, validates the body and calls `accept_invitation(p_token)` through the caller's client, so
 `auth.uid()` inside Postgres is the caller and the service-role key is not involved. SQLSTATE
 mapping: `PT401` -> 401 `unauthorized`, `PT403`/`42501` -> 403 `forbidden`, `PT404` -> 404
-`not_found`, `PT410` -> 410 `invitation_expired`.
+`not_found`, `PT410` -> 410 `invitation_expired`, `PT402` -> 402 `plan_limit_exceeded` (migration 007:
+the workspace is over its member limit; the invitation stays pending).
 
 Revoking an invitation needs no function: it is a direct delete under RLS (owner/admin) and the
 trigger writes `invitation.revoked`.
@@ -1109,6 +1361,26 @@ deletion it completes was audited as `attachment.removed` / `attachment.rejected
 a record, module or workspace delete). Scheduled through pg_cron (migration 006). `verify_jwt =
 true` works with the legacy service-role JWT; a hosted project that only has `sb_secret_...` keys
 must set `verify_jwt = false` for this function (it checks the key itself).
+
+### `change-plan` (POST, operators only, migration 007)
+
+Request `{ workspaceId: uuid, plan: string }` (`plan` trimmed, lowercased, a plan key), with
+`Authorization: Bearer <service-role key>`. Response
+`200 { data: { workspaceId, from, to, changed, overLimit } }`. Errors: 401 `unauthorized` (no
+bearer), 403 `forbidden` (any other bearer, e.g. a user JWT), 400 `validation_error`
+(malformed body; unknown or inactive plan with `details.fieldErrors.plan`), 404 `not_found`
+(no such workspace), 500 `internal`. A thin wrapper around `change_workspace_plan()` with the
+service-role client; downgrades are allowed when over the limit (nothing is deleted, `overLimit`
+lists the resources above the new limits). Audit: the `subscriptions_audit` trigger writes
+`subscription.plan_changed { from, to }` (actor null for now), so the function does not call
+`writeAudit`. Hook for Part 18c (platform admin web): a `TODO(Part 18c)` in the function marks
+where `requireUser` + a platform-admin check replaces `requireServiceRole` and the admin's id is
+passed as `p_actor_id`. In `scripts/ci/functions-smoke.sh` (no auth 401, user JWT 403).
+Verified by HTTP on 2026-11-05 against the local stack (free -> pro 200 `changed: true`, same
+plan `changed: false`, unknown plan 400, unknown workspace 404, pro -> free with three seats in
+use 200 `overLimit: ["members"]`; afterwards `invite-member` and `accept-invitation` answered
+402 `plan_limit_exceeded` and a direct PostgREST module insert 402 `PT402`).
+Local operator procedure: `docs/operations.md`, "Changing a workspace's plan".
 
 ### `attachment-url` (POST, migration 006)
 
@@ -1838,5 +2110,12 @@ module or workspace (or a malformed id) gets `RecordNotFound` the same way.
   test `21_phase3_fixes`. Suite: 21 files, 973 tests, passing on a fresh and on a used database.
 - Phase 3, still open: a transactional `create_module_with_fields` for templates (optional, see
   the modules section); the hosted Vault secrets for the purge job (Phase 5, `docs/operations.md`).
-- Phase 4: billing tables, `check_entitlement` (on top of `workspace_usage`), `create-workspace`,
-  the record-audit and record-ownership decisions.
+- Part 18a (done 2026-11-05): migration 007 (`plans`, `subscriptions`, `workspace_entitlements`,
+  `check_entitlement` insert triggers, contract C6, `change_workspace_plan`), Edge Function
+  `change-plan`, PT402 mapping in `invite-member` and `accept-invitation`, test
+  `22_plans_and_entitlements`, concurrency case (e). Suite: 22 files, 1140 tests, passing on a
+  fresh and on a used database. No `create-workspace` function was needed: the
+  `workspaces_check_entitlement` trigger checks the workspace limit before the insert.
+- Phase 4, still open: usage page and limit messages (Part 18b), platform admin web and its
+  `change-plan` caller (Part 18c), billing provider per D3, the record-audit and record-ownership
+  decisions.

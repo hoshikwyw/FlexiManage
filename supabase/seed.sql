@@ -9,8 +9,8 @@
 --     bob@example.com    00000000-0000-0000-0000-00000000000b
 --
 --   Workspaces
---     Workspace A  slug workspace-a  00000000-0000-0000-0000-0000000000aa  owner: alice
---     Workspace B  slug workspace-b  00000000-0000-0000-0000-0000000000bb  owner: bob
+--     Workspace A  slug workspace-a  00000000-0000-0000-0000-0000000000aa  owner: alice  plan: Business
+--     Workspace B  slug workspace-b  00000000-0000-0000-0000-0000000000bb  owner: bob    plan: Free
 --
 -- Alice is NOT a member of B and Bob is NOT a member of A. The cross-workspace
 -- denial tests (Part 3) rely on that.
@@ -106,6 +106,26 @@ values
   ('00000000-0000-0000-0000-0000000000bb', 'Workspace B', 'workspace-b',
    '00000000-0000-0000-0000-00000000000b')
 on conflict (id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- Plans (migration 007). Every workspace starts on Free (the
+-- workspaces_create_subscription trigger). Workspace A is moved to Business so
+-- local development and the dirty-state script have room (20 members, 20
+-- modules, 50,000 records, 10 GB); Workspace B stays on Free and is already at
+-- its module limit (1 of 1: Projects), which shows the limit state in the app.
+-- Seed writes run as postgres and are never limit-checked
+-- (entitlement_check_bypassed). The update writes subscription.plan_changed
+-- (actor null). Re-running leaves a plan alone once it was ever changed.
+-- ---------------------------------------------------------------------------
+update public.subscriptions s
+   set plan_key = 'business'
+ where s.workspace_id = '00000000-0000-0000-0000-0000000000aa'
+   and s.plan_key = 'free'
+   and not exists (
+     select 1 from public.audit_events e
+     where e.workspace_id = s.workspace_id
+       and e.action = 'subscription.plan_changed'
+   );
 
 -- ---------------------------------------------------------------------------
 -- Content (migration 004). Fixed ids mirrored in tests/fixtures/ids.ts.

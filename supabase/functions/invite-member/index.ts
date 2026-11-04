@@ -4,7 +4,10 @@
  * Body:     { workspaceId: uuid, email: string, role: 'owner' | 'admin' | 'member' }
  * Success:  200 { data: { id, email, role, expiresAt } }   (the token is never returned)
  * Errors:   401 unauthorized, 400 validation_error, 403 forbidden (not a member, not
- *           owner/admin, or admin inviting as owner), 409 conflict (already a member).
+ *           owner/admin, or admin inviting as owner), 409 conflict (already a member),
+ *           402 plan_limit_exceeded (memberships + pending invitations would exceed the
+ *           plan's member limit; contract C6, details { resource, limit, current, plan }).
+ *           A pending invitation reserves its seat (migration 007).
  *
  * Idempotent: a pending, unexpired invitation for the same email returns 200 with
  * the existing row instead of creating a duplicate. The database enforces this too
@@ -22,7 +25,7 @@
  */
 import { z } from 'zod'
 import { adminClient, requireUser, requireWorkspaceRole } from '../_shared/auth.ts'
-import { AppError, jsonOk } from '../_shared/errors.ts'
+import { AppError, jsonOk, planLimitError } from '../_shared/errors.ts'
 import { createHandler } from '../_shared/handler.ts'
 import { WORKSPACE_ROLES, type WorkspaceRole } from '../_shared/types.ts'
 import { parseBody } from '../_shared/validation.ts'
@@ -132,6 +135,9 @@ Deno.serve(
       .single<InvitationRow>()
 
     if (insertError) {
+      // PT402 = the plan's member limit is reached (contract C6): 402 plan_limit_exceeded.
+      const limit = planLimitError(insertError)
+      if (limit) throw limit
       // 42501 = RLS rejected the row: the role check above and the policy disagree.
       if (insertError.code === '42501') {
         throw new AppError(403, 'forbidden', 'You do not have permission to create this invitation')

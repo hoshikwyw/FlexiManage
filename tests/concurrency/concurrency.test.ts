@@ -20,7 +20,9 @@
  * Writers act as the fixture user through `set role authenticated` plus `request.jwt.claims`,
  * the way PostgREST does, so RLS and the column grants apply. Fixtures (tests/fixtures/
  * concurrency.ts) are committed at the start and removed at the end (account deletion cascades
- * the workspace; the queue rows of its never-uploaded attachments are deleted too).
+ * the workspace; the queue rows of its never-uploaded attachments are deleted too). The fixture
+ * workspace is on Free (migration 007): case (e) fills it to one record below the limit as
+ * postgres (not limit-checked) and races the last slot.
  */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
@@ -529,5 +531,56 @@ describe('(d) update_record with the same expected timestamp', () => {
       ),
       expected,
     )
+  })
+})
+
+describe('(e) last record slot of a Free workspace under concurrent inserts (migration 007)', () => {
+  it('lets exactly one of two simultaneous inserts take the 200th slot and answers the other PT402', async () => {
+    assert.equal(
+      await observer.one(
+        `select plan_key from public.subscriptions where workspace_id = ${lit(WS)}`,
+      ),
+      'free',
+    )
+    const limit = Number(
+      await observer.one(`select max_records from public.plans where key = 'free'`),
+    )
+    const existing = Number(
+      await observer.one(`select count(*) from public.records where workspace_id = ${lit(WS)}`),
+    )
+    // Filler up to one free slot, written by the observer as postgres (never limit-checked).
+    await observer.ok(
+      `insert into public.records (workspace_id, module_id, title, custom_values, created_by) ` +
+        `select ${lit(WS)}, ${lit(MOD)}, 'e-filler-' || g, '{"company": "Filler"}', ${lit(U)} ` +
+        `from generate_series(1, ${limit - 1 - existing}) g;`,
+    )
+    try {
+      assert.equal(
+        await observer.one(`select count(*) from public.records where workspace_id = ${lit(WS)}`),
+        String(limit - 1),
+      )
+      const outcome = await race(s1, s2, (session) =>
+        insertRecordWith(`e-last-${session.label}`, {}),
+      )
+      assert.equal(outcome.first.result.sqlstate, '00000', outcome.first.result.error)
+      assert.equal(outcome.second.waitedOn, 'advisory')
+      assert.equal(outcome.second.result.sqlstate, 'PT402')
+      assert.match(outcome.second.result.error, /plan_limit_exceeded/)
+      assert.equal(
+        await observer.one(`select count(*) from public.records where workspace_id = ${lit(WS)}`),
+        String(limit),
+      )
+      assert.equal(
+        await observer.one(
+          `select string_agg(title, ',') from public.records ` +
+            `where workspace_id = ${lit(WS)} and title like 'e-last-%'`,
+        ),
+        `e-last-${outcome.first.label}`,
+      )
+    } finally {
+      await observer.ok(
+        `delete from public.records where workspace_id = ${lit(WS)} and (title like 'e-filler-%' or title like 'e-last-%');`,
+      )
+    }
   })
 })

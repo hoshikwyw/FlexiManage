@@ -1,5 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test'
 
+import { changePlan } from './support/admin'
 import { signUpViaApi } from './support/api'
 import { specData } from './support/data'
 import { count, lit, sql } from './support/db'
@@ -22,6 +23,8 @@ import {
  * records list and `export-records` must match the same rows for the same criteria). Runs in
  * its own workspace with two modules from the "Clients" template: Company (text, required),
  * Contact email (text), Status (select lead/active/churned), Contract value (currency EUR).
+ * Two modules exceed the Free plan (one module), so setup moves the workspace to Business through
+ * the operator function `change-plan` (migration 007) before creating them.
  */
 test.skip(!hasLocalBackend, SKIP_WITHOUT_BACKEND)
 test.describe.configure({ mode: 'serial' })
@@ -45,6 +48,7 @@ test.beforeAll(async ({ browser }) => {
   page = await context.newPage()
   await signIn(page, owner.email, owner.password)
   workspaceId = await createFirstWorkspace(page, workspaceName)
+  await changePlan(workspaceId, 'business')
   clientsId = await createModuleFromTemplate(page, workspaceId, 'Clients', clientsName)
   parityId = await createModuleFromTemplate(page, workspaceId, 'Clients', parityName)
 })

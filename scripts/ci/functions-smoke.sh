@@ -11,6 +11,8 @@
 #   4. alice@example.com exports a module of a workspace she is not a member of -> 403
 #   5. alice@example.com exports the seed module Clients of Workspace A -> 200, text/csv
 #   6. alice@example.com asks attachment-url for a random attachment id -> 404 (not_found)
+#   7. POST change-plan without Authorization                -> 401
+#   8. alice@example.com (user JWT) calls change-plan         -> 403 (operators only)
 #
 # `supabase start` normally serves the functions at <API_URL>/functions/v1/<name> through the
 # edge runtime container. If the probe shows the runtime is not answering (for example after a
@@ -161,6 +163,14 @@ assert_status "export-records of the seed module Clients (status and content typ
 
 ATTACHMENT_URL_BODY=$(printf '{"attachmentId":"%s"}' "$(random_uuid)")
 assert_status "attachment-url for a random attachment id" 404   "$(status_of "$FUNCTIONS_URL/attachment-url" "$USER_HEADERS" "$ATTACHMENT_URL_BODY")"
+
+# change-plan (migration 007): operators only. Seed Workspace A, plan business (its seed plan),
+# so even a mistaken success would not change anything.
+CHANGE_PLAN_BODY='{"workspaceId":"00000000-0000-0000-0000-0000000000aa","plan":"business"}'
+assert_status "change-plan without credentials" 401 \
+  "$(status_of "$FUNCTIONS_URL/change-plan" "$NO_AUTH_HEADERS" "$CHANGE_PLAN_BODY")"
+assert_status "change-plan with a user JWT" 403 \
+  "$(status_of "$FUNCTIONS_URL/change-plan" "$USER_HEADERS" "$CHANGE_PLAN_BODY")"
 
 if [ "$FAILURES" -ne 0 ]; then
   fail "$FAILURES function smoke assertion(s) failed"

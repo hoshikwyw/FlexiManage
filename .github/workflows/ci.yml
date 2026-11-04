@@ -160,7 +160,8 @@ jobs:
 
       - name: Write .env.local for the dev server
         # Only the API URL and the anon key, read without echoing. The service-role key is never
-        # written anywhere (the global teardown reads it in memory for purge-attachments).
+        # written anywhere (the global teardown reads it in memory for purge-attachments, and the
+        # records and validation specs for change-plan, migration 007).
         run: |
           STATUS_ENV=$(supabase status -o env 2>/dev/null)
           API_URL=$(printf '%s\n' "$STATUS_ENV" | sed -nE 's/^API_URL="?([^"]*)"?$/\1/p' | head -n 1)

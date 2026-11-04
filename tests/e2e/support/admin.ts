@@ -3,11 +3,12 @@ import { execSync, spawnSync } from 'node:child_process'
 import { supabaseAnonKey, supabaseUrl } from './env'
 
 /**
- * Operator calls against the local stack that need the service-role key: only
- * `purge-attachments` (operators only, contract in docs/architecture.md). The key is read from
+ * Operator calls against the local stack that need the service-role key: `purge-attachments`
+ * and `change-plan` (operators only, contracts in docs/architecture.md). The key is read from
  * `supabase status -o env` into memory for the call and never printed, logged or stored. Used
- * by the global teardown and by the isolation spec's cleanup assertion; no spec uses the key for
- * anything else.
+ * by the global teardown and by the isolation spec's cleanup assertion (purge), and by specs
+ * whose setup needs more than the Free plan allows (change-plan, migration 007); no spec uses the
+ * key for anything else.
  */
 
 /**
@@ -93,4 +94,46 @@ export async function drainPurgeQueue(key: string): Promise<PurgeSummary> {
     summary.dead = result.dead
   } while (summary.retryable > 0 && summary.calls < MAX_PURGE_CALLS)
   return summary
+}
+
+/** Response of `change-plan` (migration 007). */
+export interface ChangePlanResult {
+  workspaceId: string
+  from: string
+  to: string
+  changed: boolean
+  overLimit: string[]
+}
+
+/**
+ * Put a workspace on `plan` through `change-plan`, the operator path (docs/operations.md,
+ * "Changing a workspace's plan"). Specs call it in setup when their fixtures need more than the
+ * Free limits (for example two modules in one workspace). Throws when the service-role key is
+ * unavailable or the call does not answer 200.
+ */
+export async function changePlan(
+  workspaceId: string,
+  plan: 'free' | 'pro' | 'business',
+): Promise<ChangePlanResult> {
+  const key = localServiceRoleKey()
+  if (!key) throw new Error('change-plan needs the local service-role key (supabase status)')
+  const response = await fetch(`${supabaseUrl}/functions/v1/change-plan`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseAnonKey,
+      authorization: `Bearer ${key}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ workspaceId, plan }),
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw new Error(`change-plan answered HTTP ${response.status}`)
+  }
+  const body = (await response.json()) as { data?: ChangePlanResult }
+  if (!body.data || body.data.to !== plan) {
+    throw new Error('change-plan answered an unexpected shape')
+  }
+  return body.data
 }

@@ -444,6 +444,13 @@ verify_jwt = true
 import_map = "./functions/deno.json"
 entrypoint = "./functions/purge-attachments/index.ts"
 
+# Operators only (migration 007): plan change; the function itself requires the service-role key.
+[functions.change-plan]
+enabled = true
+verify_jwt = true
+import_map = "./functions/deno.json"
+entrypoint = "./functions/change-plan/index.ts"
+
 # Contract C1 (migration 006): signed 60-second download URL for an attachment the caller can see.
 [functions.attachment-url]
 enabled = true

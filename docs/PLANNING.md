@@ -1,7 +1,8 @@
 # FlexiManage Project Plan
 
 Living plan for the FlexiManage MVP. Source: FlexiManage React + Vite SaaS Plan (October 2026 edition).
-Owner: project lead. Updated by the `product-planner` agent. Last updated: 2026-11-03.
+Owner: project lead. Updated by the `product-planner` agent. Last updated: 2026-11-05 (Phase 4
+backend, Part 18a: plans, subscriptions and server-side plan limits).
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done, `[-]` dropped.
 
@@ -144,13 +145,13 @@ Exit criteria: the chosen workflow from D1 can be completed end to end with real
 
 Agents: supabase-engineer, frontend-dev, test-engineer.
 
-- [ ] Migration 007 (renumbered 2026-11-04: 005 is attachments, 006 the Phase 3 review fixes): `plans`, `subscriptions`, `entitlements`, `usage_counters` seeded with Free, Pro, Business (supabase-engineer).
-- [ ] Postgres function `check_entitlement(workspace_id, resource)` called from insert triggers on members, modules, records, attachments (supabase-engineer).
+- [x] Migration 007 (renumbered 2026-11-04: 005 is attachments, 006 the Phase 3 review fixes): `plans` seeded with Free, Pro, Business (section 8 limits) and `subscriptions` (one per workspace, Free / `manual` on creation, existing workspaces backfilled) (supabase-engineer, done 2026-11-05). Entitlements are a function (`workspace_entitlements`) over the plan's limit columns and live counts, not tables: no `entitlements` or `usage_counters` table (live counts cannot drift under deletes and cascades; see `docs/architecture.md`, "Plans and limits").
+- [x] Postgres function `check_entitlement(workspace_id, resource, delta)` called from before-insert triggers on members, invitations (pending invitations reserve seats), modules, records, attachments (declared bytes) and workspaces (owned-workspace allowance); per-workspace advisory lock; stable error contract C6 (`PT402 plan_limit_exceeded`, HTTP 402, DETAIL `{resource, limit, current, plan}`), mapped to `plan_limit_exceeded` by `invite-member` and `accept-invitation` (supabase-engineer, done 2026-11-05).
 - [ ] Usage page showing counters against limits with over-limit state, no auto-deletion on downgrade (frontend-dev).
 - [ ] Admin-only and owner-only UI gating matching server rules (frontend-dev).
-- [ ] Billing provider integration per D3, or a manual "contact us" flow for pilots (supabase-engineer).
+- [~] Billing provider integration per D3, or a manual "contact us" flow for pilots (supabase-engineer). Manual part done 2026-11-05: `subscriptions.provider = 'manual'`, operator-only Edge Function `change-plan` (audited `subscription.plan_changed`, downgrades allowed and never delete data; procedure in `docs/operations.md`). Provider integration waits for D3.
 - [ ] Audit log page for owners (frontend-dev).
-- [ ] Plan-limit tests and audit event tests (test-engineer).
+- [~] Plan-limit tests and audit event tests (test-engineer). Database and function side done 2026-11-05: `supabase/tests/22_plans_and_entitlements.sql` (155 tests), concurrency case (e) (last record slot), `change-plan` in `scripts/ci/functions-smoke.sh`. UI-level limit tests come with the usage page (Part 18b).
 - [ ] Platform admin web (added 2026-11-03): operator back-office for the FlexiManage team, separate
   from workspace admin. Minimal scope: `platform_admins` table and `is_platform_admin()` helper;
   read policies for platform admins on `workspaces`, `workspace_members`, `subscriptions`,
@@ -158,7 +159,9 @@ Agents: supabase-engineer, frontend-dev, test-engineer.
   suspend workspace and support impersonation (every call audited); an `/admin` route group in the
   app guarded by the platform role (workspace list with usage vs limits, subscription view,
   cross-tenant audit log). Until it exists, Supabase Studio / the Supabase dashboard is the
-  operator console (supabase-engineer, frontend-dev, security-reviewer).
+  operator console (supabase-engineer, frontend-dev, security-reviewer). Since 2026-11-05 the
+  plan change itself exists as the service-role-only `change-plan` function with a
+  `TODO(Part 18c)` hook for the platform-admin check and `p_actor_id` for the audit actor.
 
 Exit criteria: exceeding any Free limit fails server-side with a stable error code and the UI explains it.
 
@@ -531,7 +534,10 @@ Run with two seeded workspaces (A, B) and one user in each. Every tenant-owned t
 | records | [x] | [x] | [x] | [x] |
 | attachments (table and storage) | [x] | [x] | [x] | [x] |
 | audit_events | [x] | [x] | [x] | [x] |
-| subscriptions / entitlements / usage_counters | [ ] | [ ] | [ ] | [ ] |
+| subscriptions | [x] | [x] | [x] | [x] |
+| plans (global catalogue, not tenant-owned) | n/a (readable by every signed-in user by design) | [x] | [x] | [x] |
+| entitlements (function `workspace_entitlements`, no table) | [x] | n/a | n/a | n/a |
+| usage_counters | dropped: not created (live counts, migration 007) | | | |
 
 Done cells are proven by `supabase/tests/02_isolation_workspaces.sql`, `03_isolation_members.sql`,
 `04_isolation_invitations.sql` and `05_isolation_audit_events.sql`; `modules`, `field_definitions`
@@ -543,6 +549,12 @@ as the other workspace's owner; update has no policy) (run with `npm run test:db
 insert, update or delete grant on `audit_events`, so the command fails with `permission denied` for every
 row, including the caller's own workspace. `profiles` has no `workspace_id` and is covered
 separately in `06_isolation_profiles.sql` (own row plus shared-workspace visibility only).
+Migration 007 (2026-11-05, `22_plans_and_entitlements.sql`): bob sees no subscription outside his
+own workspaces, and `authenticated` has no insert, update or delete grant on `subscriptions` or
+`plans`, so every client write fails with `permission denied`, own workspace included (the
+stricter rule); `workspace_entitlements` of another workspace raises `42501`; an insert into
+another workspace that is at its plan limit answers the RLS `42501`, never `PT402`, so a
+non-member never learns that workspace's plan or usage.
 
 Plus: Edge Functions `invite-member` and `export-records` return 403 when the caller is not a member of the target workspace, and 403 when the caller is a `member` for admin-only actions.
 
@@ -636,4 +648,5 @@ call or form at week 3 and week 6, data export guaranteed at the end.
 | 2026-10-30 | React + Vite + TypeScript SPA with Supabase backend; Next.js not used for the MVP | Authenticated dashboard needs no SEO; static hosting is cheap; Supabase removes early backend operations |
 | 2026-10-30 | Privileged logic in Supabase Edge Functions; dedicated Node.js API deferred | Fewer services to run before product-market fit |
 | 2026-10-30 | Seven project agents created under `.claude/agents/` | Parallelise scaffolding, tests and reviews for a small team |
+| 2026-11-05 | Plan limits (migration 007): entitlements are a function over the plan's limit columns and live counts, no `entitlements` / `usage_counters` tables; a user may own as many workspaces as the best plan among the workspaces they own allows (Free if none); a pending invitation reserves a seat and acceptance re-checks (refused while the workspace is over its member limit, e.g. after a downgrade); sessions as `postgres` / `supabase_admin` (seed, Studio, fixtures) are not limit-checked, `service_role` is; seed Workspace A on Business, B on Free | Counters that cannot drift under cascades; a downgrade must never let more people in; seed and operator work must not be blocked. Details in `docs/architecture.md`, "Plans and limits" |
 | 2026-11-03 | Recommendation (not decision) for D1: accommodation operators, housekeeping turnover tracking, default module "Housekeeping tasks"; S1 service offices as fallback; S2 retail rejected | Best reachability for a solo founder and the only candidate workflow that fits one flat module without relationships; see `docs/product/segment-comparison.md`. Decision remains with the project lead, due 2026-11-15 |

@@ -141,6 +141,20 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"plans": {
+                  Row: {
+                    "active": boolean,"billing_interval": string,"created_at": string,"currency": string,"key": string,"max_members": number,"max_modules": number,"max_records": number,"max_storage_bytes": number,"max_workspaces": number,"name": string,"position": number,"price_cents": number,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "active"?: boolean,"billing_interval"?: string,"created_at"?: string,"currency"?: string,"key": string,"max_members": number,"max_modules": number,"max_records": number,"max_storage_bytes": number,"max_workspaces": number,"name": string,"position"?: number,"price_cents": number,"updated_at"?: string
+                  }
+                  Update: {
+                    "active"?: boolean,"billing_interval"?: string,"created_at"?: string,"currency"?: string,"key"?: string,"max_members"?: number,"max_modules"?: number,"max_records"?: number,"max_storage_bytes"?: number,"max_workspaces"?: number,"name"?: string,"position"?: number,"price_cents"?: number,"updated_at"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"profiles": {
                   Row: {
                     "avatar_url": string | null,"created_at": string,"email": string,"full_name": string | null,"id": string,"updated_at": string
@@ -201,6 +215,32 @@ isOneToOne: false
                   Relationships: [
                     
                   ]
+                },"subscriptions": {
+                  Row: {
+                    "created_at": string,"created_by": string | null,"current_period_end": string | null,"id": string,"plan_key": string,"provider": string,"provider_customer_id": string | null,"provider_subscription_id": string | null,"status": Database["public"]['Enums']["subscription_status"],"updated_at": string,"workspace_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"created_by"?: string | null,"current_period_end"?: string | null,"id"?: string,"plan_key"?: string,"provider"?: string,"provider_customer_id"?: string | null,"provider_subscription_id"?: string | null,"status"?: Database["public"]['Enums']["subscription_status"],"updated_at"?: string,"workspace_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"created_by"?: string | null,"current_period_end"?: string | null,"id"?: string,"plan_key"?: string,"provider"?: string,"provider_customer_id"?: string | null,"provider_subscription_id"?: string | null,"status"?: Database["public"]['Enums']["subscription_status"],"updated_at"?: string,"workspace_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "subscriptions_plan_key_fkey"
+      columns: ["plan_key"]
+isOneToOne: false
+      referencedRelation: "plans"
+      referencedColumns: ["key"]
+    },{
+      foreignKeyName: "subscriptions_workspace_id_fkey"
+      columns: ["workspace_id"]
+isOneToOne: true
+      referencedRelation: "workspaces"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"workspace_members": {
                   Row: {
                     "created_at": string,"role": Database["public"]['Enums']["workspace_role"],"updated_at": string,"user_id": string,"workspace_id": string
@@ -255,8 +295,25 @@ isOneToOne: false
 "can_upload_attachment_object":
 { Args: { "p_metadata": Json,"p_name": string }; Returns: boolean
                            },
+"change_workspace_plan":
+{ Args: { "p_actor_id"?: string,"p_plan_key": string,"p_workspace_id": string }; Returns: {
+              "changed": boolean,"from_plan": string,"over_limit": (string)[],"to_plan": string,"workspace_id": string
+            }[]
+                           },
+"check_entitlement":
+{ Args: { "p_delta"?: number,"p_resource": string,"p_workspace_id": string }; Returns: undefined
+                           },
+"check_workspace_entitlement":
+{ Args: { "p_owner_id": string }; Returns: undefined
+                           },
 "current_user_workspace_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"entitlement_check_bypassed":
+{ Args: Record<PropertyKey, never>; Returns: boolean
+                           },
+"entitlement_usage":
+{ Args: { "p_resource": string,"p_workspace_id": string }; Returns: number
                            },
 "field_options_are_valid":
 { Args: { "p_options": Json,"p_type": Database["public"]['Enums']["field_type"] }; Returns: boolean
@@ -275,6 +332,11 @@ isOneToOne: false
                            },
 "jsonb_values_text":
 { Args: { "p_values": Json }; Returns: string
+                           },
+"owned_workspace_allowance":
+{ Args: { "p_user_id": string }; Returns: {
+              "max_workspaces": number,"owned": number,"plan_key": string
+            }[]
                            },
 "record_search_document":
 { Args: { "p_status": string,"p_title": string,"p_values": Json }; Returns: unknown
@@ -310,6 +372,34 @@ isOneToOne: false
         isOneToOne: true
         isSetofReturn: false
       } },
+"workspace_effective_plan":
+{ Args: { "p_workspace_id": string }; Returns: {
+              "active": boolean,
+"billing_interval": string,
+"created_at": string,
+"currency": string,
+"key": string,
+"max_members": number,
+"max_modules": number,
+"max_records": number,
+"max_storage_bytes": number,
+"max_workspaces": number,
+"name": string,
+"position": number,
+"price_cents": number,
+"updated_at": string
+            }
+                          SetofOptions: {
+        from: "*"
+        to: "plans"
+        isOneToOne: true
+        isSetofReturn: false
+      } },
+"workspace_entitlements":
+{ Args: { "p_workspace_id": string }; Returns: {
+              "current_value": number,"limit_value": number,"over_limit": boolean,"plan": string,"resource": string
+            }[]
+                           },
 "workspace_usage":
 { Args: { "p_workspace_id": string }; Returns: {
               "attachments": number,"members": number,"modules": number,"records": number,"storage_bytes": number
@@ -317,7 +407,7 @@ isOneToOne: false
                            }
           }
           Enums: {
-            "field_type": "text"|"number"|"date"|"select"|"checkbox"|"currency","workspace_role": "owner"|"admin"|"member"
+            "field_type": "text"|"number"|"date"|"select"|"checkbox"|"currency","subscription_status": "active"|"past_due"|"canceled","workspace_role": "owner"|"admin"|"member"
           }
           CompositeTypes: {
             [_ in never]: never
@@ -437,7 +527,7 @@ export const Constants = {
           }
         },"public": {
           Enums: {
-            "field_type": ["text", "number", "date", "select", "checkbox", "currency"],"workspace_role": ["owner", "admin", "member"]
+            "field_type": ["text", "number", "date", "select", "checkbox", "currency"],"subscription_status": ["active", "past_due", "canceled"],"workspace_role": ["owner", "admin", "member"]
           }
         }
 } as const

@@ -1,4 +1,5 @@
--- 01: structural guarantees of migrations 001 to 006.
+-- 01: structural guarantees of migrations 001 to 006 (totals include 007,
+--     whose objects are asserted in 22_plans_and_entitlements.sql).
 --   * every table in public has row level security enabled
 --   * anon has no privilege on any public table; authenticated has exactly the
 --     table and column grants documented in docs/architecture.md (migration 003
@@ -26,7 +27,7 @@
 create extension if not exists pgtap with schema extensions;
 
 begin;
-select plan(241);
+select plan(253);
 
 -- ---------------------------------------------------------------------------
 -- Row level security
@@ -39,8 +40,8 @@ select is(
 
 select is(
   (select count(*)::int from pg_tables where schemaname = 'public'),
-  10,
-  'migrations 001 to 005 create exactly ten tables in public'
+  12,
+  'migrations 001 to 007 create exactly twelve tables in public (007: plans, subscriptions; see 22)'
 );
 
 select ok(
@@ -305,8 +306,8 @@ from unnest(array['invoke_purge_attachments', 'schedule_storage_maintenance']) f
 
 select is(
   (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace),
-  36,
-  'migrations 001 to 006 define exactly thirty-six functions in public'
+  48,
+  'migrations 001 to 007 define exactly forty-eight functions in public (007 adds twelve; see 22)'
 );
 
 select * from finish();
